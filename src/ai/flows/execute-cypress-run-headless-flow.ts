@@ -86,7 +86,7 @@ async function tryCypressRunAttempt(
           output: {
             status: 'error_running',
             message: `Cypress Run with ${browserName} Failed: Xvfb dependency reported.`,
-            detailedLog: `Xvfb error detected with ${browserName}.\n${fullLog.substring(0, 1500)}`,
+            detailedLog: `Xvfb error detected with ${browserName}.\n${fullLog}`,
             specPath: specFilePath,
           }
         });
@@ -102,7 +102,7 @@ async function tryCypressRunAttempt(
             message: `Cypress headless run with ${browserName} for spec: ${relativeSpecPath} completed successfully.`,
             specPath: specFilePath,
             runSummary: stdoutData.substring(stdoutData.lastIndexOf('Run Summary'), stdoutData.lastIndexOf('Done running') !== -1 ? stdoutData.lastIndexOf('Done running') : undefined) || 'Tests passed.',
-            detailedLog: fullLog.substring(0, 1500),
+            detailedLog: fullLog,
           }
         });
       } else { // Includes code !== 0, test failures, or other stderr output
@@ -114,7 +114,7 @@ async function tryCypressRunAttempt(
             message: `Cypress headless run with ${browserName} for spec: ${relativeSpecPath} ${code !==0 || stdoutData.match(/\(\d+ failing\)/) ? 'completed with failures/errors' : 'did not complete as expected'}. Exit code: ${code}.`,
             specPath: specFilePath,
             runSummary: stdoutData.substring(stdoutData.lastIndexOf('Run Summary'), stdoutData.lastIndexOf('Done running') !== -1 ? stdoutData.lastIndexOf('Done running') : undefined) || 'Run did not complete successfully or had failures.',
-            detailedLog: fullLog.substring(0, 1500),
+            detailedLog: fullLog,
           }
         });
       }
@@ -167,7 +167,7 @@ async function executeCypressRunHeadlessLogic(input: ExecuteCypressRunHeadlessIn
   cumulativeLog += attemptResult.log;
 
   if (attemptResult.status === 'ok' || (attemptResult.status === 'error_generic' && attemptResult.output.status !== 'error_running')) {
-    return { ...attemptResult.output, detailedLog: (cumulativeLog + "\nFinal Result from Chrome attempt:\n" + (attemptResult.output.detailedLog || "")).substring(0,2500) };
+    return { ...attemptResult.output, detailedLog: (cumulativeLog + "\nFinal Result from Chrome attempt:\n" + (attemptResult.output.detailedLog || "")) };
   }
   
 
@@ -177,7 +177,7 @@ async function executeCypressRunHeadlessLogic(input: ExecuteCypressRunHeadlessIn
   cumulativeLog += attemptResult.log;
   
   const finalMessage = attemptResult.status === 'ok' ? attemptResult.output.message : `${attemptResult.output.message} (after trying Chrome then Firefox).`;
-  const finalDetailedLog = (cumulativeLog + "\nFinal Result from Firefox attempt:\n" + (attemptResult.output.detailedLog || "")).substring(0,2500);
+  const finalDetailedLog = (cumulativeLog + "\nFinal Result from Firefox attempt:\n" + (attemptResult.output.detailedLog || ""));
 
   return { ...attemptResult.output, message: finalMessage, detailedLog: finalDetailedLog };
 }
