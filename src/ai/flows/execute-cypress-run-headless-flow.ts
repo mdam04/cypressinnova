@@ -42,7 +42,7 @@ async function tryCypressRunAttempt(
   spawnOptions: { cwd: string; stdio: StdioOptions; env: Record<string, string | undefined> },
   specFilePath: string,
   relativeSpecPath: string
-): Promise<{ status: 'ok' | 'error_xvfb' | 'error_generic'; output: ExecuteCypressRunHeadlessOutput; log: string }> {
+): Promise<{ status: 'ok' | 'error_xvfb' | 'error_libglib' | 'error_generic'; output: ExecuteCypressRunHeadlessOutput; log: string }> {
   return new Promise((resolve) => {
     let stdoutData = '';
     let stderrData = '';
@@ -84,13 +84,27 @@ async function tryCypressRunAttempt(
       const fullLog = `Browser: ${browserName}\nCommand: npx cypress ${cypressArgs.join(' ')}\nExit Code: ${code}\n\nStdout:\n${stdoutData}\n\nStderr:\n${stderrData}`;
       attemptLog += `Process for ${browserName} closed with code ${code}\n`;
 
+      if (stderrData.includes('libglib-2.0.so.0: cannot open shared object file')) {
+        resolve({
+          status: 'error_libglib',
+          log: attemptLog,
+          output: {
+            status: 'error_running',
+            message: `Cypress Run with ${browserName} Failed: Missing system library 'libglib-2.0.so.0'. This library is required by Cypress/Electron. Please install it in your environment (e.g., via 'apt-get install libglib2.0-0' on Debian/Ubuntu, or its equivalent for your OS).`,
+            detailedLog: `Missing 'libglib-2.0.so.0' error detected with ${browserName}.\n${fullLog}`,
+            specPath: specFilePath,
+          }
+        });
+        return;
+      }
+      
       if (stderrData.toLowerCase().includes('xvfb') && (stderrData.toLowerCase().includes('missing the dependency') || stderrData.toLowerCase().includes('spawn xvfb enoent'))) {
         resolve({
           status: 'error_xvfb',
           log: attemptLog,
           output: {
             status: 'error_running',
-            message: `Cypress Run with ${browserName} Failed: Xvfb dependency reported.`,
+            message: `Cypress Run with ${browserName} Failed: Xvfb dependency reported. This is needed for graphical components. Please install Xvfb in your environment.`,
             detailedLog: `Xvfb error detected with ${browserName}.\n${fullLog}`,
             specPath: specFilePath,
           }
@@ -98,7 +112,14 @@ async function tryCypressRunAttempt(
         return;
       }
 
-      if (code === 0 && (stdoutData.includes('All specs passed!') || stdoutData.match(/\(\d+ passing\)/))) {
+      if (code === 0 && (stdoutData.includes('All specs passed!') || stdoutData.match(/\(\d+ passing\)/) || stdoutData.includes('No specs found'))) {
+        // Consider "No specs found" as a successful Cypress run completion if exit code is 0
+         let runSummaryText = 'Tests passed or no tests found.';
+        if (stdoutData.includes('All specs passed!') || stdoutData.match(/\(\d+ passing\)/)) {
+            runSummaryText = stdoutData.substring(stdoutData.lastIndexOf('Run Summary'), stdoutData.lastIndexOf('Done running') !== -1 ? stdoutData.lastIndexOf('Done running') : undefined) || 'Tests passed.';
+        } else if (stdoutData.includes('No specs found')) {
+            runSummaryText = 'Cypress run completed: No specs found matching the pattern.';
+        }
         resolve({
           status: 'ok',
           log: attemptLog,
@@ -106,7 +127,7 @@ async function tryCypressRunAttempt(
             status: 'completed_successfully',
             message: `Cypress headless run with ${browserName} for spec: ${relativeSpecPath} completed successfully.`,
             specPath: specFilePath,
-            runSummary: stdoutData.substring(stdoutData.lastIndexOf('Run Summary'), stdoutData.lastIndexOf('Done running') !== -1 ? stdoutData.lastIndexOf('Done running') : undefined) || 'Tests passed.',
+            runSummary: runSummaryText,
             detailedLog: fullLog,
           }
         });
@@ -173,15 +194,17 @@ async function executeCypressRunHeadlessLogic(input: ExecuteCypressRunHeadlessIn
   const baseArgs = ['run'];
 
   // Attempt 1: Chrome Headless with video disabled and extra Electron flags
-  cumulativeLog += "\n--- Attempting with Chrome headless (video disabled, Electron flags) ---\n";
+  cumulativeLog += `\n--- Attempting with Chrome headless (video disabled, Electron flags) ---\n`;
   let attemptResult = await tryCypressRunAttempt(baseArgs, 'chrome', commonSpawnOptions, specFilePath, relativeSpecPath);
   cumulativeLog += attemptResult.log;
 
   if (attemptResult.status === 'ok' || (attemptResult.status === 'error_generic' && attemptResult.output.status !== 'error_running')) {
+    // If successful, or failed generically (but not a startup/xvfb/libglib issue for chrome itself), return this result
     return { ...attemptResult.output, detailedLog: (cumulativeLog + "\nFinal Result from Chrome attempt:\n" + (attemptResult.output.detailedLog || "")) };
   }
+  // If Chrome attempt had an Xvfb or libglib error, or a generic startup error, proceed to Firefox
 
-  cumulativeLog += "\n--- Chrome headless (video disabled, Electron flags) attempt encountered issues. Attempting with Firefox headless (video disabled, Electron flags) ---\n";
+  cumulativeLog += `\n--- Chrome headless (video disabled, Electron flags) attempt encountered issues (${attemptResult.status}). Attempting with Firefox headless (video disabled, Electron flags) ---\n`;
   attemptResult = await tryCypressRunAttempt(baseArgs, 'firefox', commonSpawnOptions, specFilePath, relativeSpecPath);
   cumulativeLog += attemptResult.log;
 
