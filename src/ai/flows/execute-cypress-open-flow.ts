@@ -66,7 +66,8 @@ async function executeCypressOpenLogic(input: ExecuteCypressOpenInput): Promise<
   return new Promise((resolve) => {
     let stdoutData = '';
     let stderrData = '';
-    const cypressProcess = spawn('npx', ['cypress', 'open', '--spec', relativeSpecPath], {
+    // Changed: Removed '--spec' flag, passing relativeSpecPath directly
+    const cypressProcess = spawn('npx', ['cypress', 'open', relativeSpecPath], {
       cwd: repoPath,
       detached: true, 
       stdio: ['ignore', 'pipe', 'pipe'], 
@@ -111,7 +112,7 @@ async function executeCypressOpenLogic(input: ExecuteCypressOpenInput): Promise<
             if (stderrData.trim() !== '') {
                  resolve({
                     status: 'error',
-                    message: `Cypress may have encountered an issue.`,
+                    message: `Cypress may have encountered an issue. Check the detailed log.`,
                     detailedErrorLog: `Stderr output:\n${stderrData.substring(0, 1000)}`,
                     specPath: specFilePath,
                 });
@@ -119,7 +120,7 @@ async function executeCypressOpenLogic(input: ExecuteCypressOpenInput): Promise<
             }
 
             // Priority 2: Check for positive stdout messages indicating launch
-            if (stdoutData.includes('Opening Cypress') || stdoutData.includes('Still waiting to connect to Cypress')) {
+            if (stdoutData.includes('Opening Cypress') || stdoutData.includes('Still waiting to connect to Cypress') || stdoutData.includes('already running')) {
                  resolve({
                     status: 'launched',
                     message: `Cypress launched for spec: ${relativeSpecPath}. Check the Cypress Test Runner window.`,
@@ -139,7 +140,18 @@ async function executeCypressOpenLogic(input: ExecuteCypressOpenInput): Promise<
                 return;
             }
 
-            // Fallback: Some other stdout, no stderr. Assume launched.
+            // Fallback: Some other stdout, no stderr. Assume launched if no known error patterns in stdout.
+            // Check stdout for common error indicators that might not go to stderr.
+            if (stdoutData.toLowerCase().includes('error:') || stdoutData.toLowerCase().includes('failed to open')) {
+                resolve({
+                    status: 'error',
+                    message: 'Cypress reported an issue on stdout. Check detailed logs.',
+                    detailedErrorLog: `Stdout (potential error):\n${stdoutData.substring(0, 1000)}`,
+                    specPath: specFilePath,
+                });
+                return;
+            }
+            
             resolve({
                 status: 'launched',
                 message: `Cypress launch initiated for spec: ${relativeSpecPath}. Check Cypress window.`,
@@ -160,3 +172,4 @@ export const executeCypressOpen = ai.defineFlow(
   },
   executeCypressOpenLogic
 );
+
