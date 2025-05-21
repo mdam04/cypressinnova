@@ -97,13 +97,19 @@ async function executeCypressOpenLogic(input: ExecuteCypressOpenInput): Promise<
             if(cypressProcess.killed) return; 
 
             // Priority 1: Check for explicit errors from stderr
-            // For `cypress run`, stderr can also contain legitimate informational messages,
-            // so we need to be careful. However, if it clearly indicates a launch failure, prioritize it.
+            if (stderrData.toLowerCase().includes('xvfb')) { 
+                 resolve({
+                    status: 'error',
+                    message: `Cypress Headed Run Failed: Missing Xvfb dependency.`,
+                    detailedErrorLog: `Xvfb is required for headed Cypress execution in this environment. Please install Xvfb and try again. Error details:\n${stderrData.substring(0, 1000)}\nStdout (if any):\n${stdoutData.substring(0,500)}`,
+                    specPath: specFilePath,
+                });
+                return;
+            }
             if (stderrData.toLowerCase().includes('cannot find module') || 
                 stderrData.toLowerCase().includes('no version of') || // e.g., no version of Chrome found
-                stderrData.toLowerCase().includes('xvfb') || // If Xvfb is still an issue for headed run
                 stderrData.toLowerCase().includes('failed to connect') ||
-                (stderrData.trim() !== '' && !stdoutData.toLowerCase().includes('run starting') && !stdoutData.toLowerCase().includes('running:'))) { // If stderr has content and stdout doesn't show signs of starting
+                (stderrData.trim() !== '' && !stdoutData.toLowerCase().includes('run starting') && !stdoutData.toLowerCase().includes('running:'))) { 
                  resolve({
                     status: 'error',
                     message: `Cypress run may have encountered an issue. Check the detailed log.`,
