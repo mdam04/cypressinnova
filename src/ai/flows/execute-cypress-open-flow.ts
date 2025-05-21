@@ -1,11 +1,11 @@
 
 'use server';
 /**
- * @fileOverview Saves a Cypress test file and attempts to run Cypress in headed mode.
+ * @fileOverview Saves a Cypress test file and attempts to run Cypress headlessly.
  *
- * - executeCypressOpen - Saves the test and runs `cypress run --headed --spec <spec>`.
- * - ExecuteCypressOpenInput - Input type for the flow.
- * - ExecuteCypressOpenOutput - Output type for the flow.
+ * - executeCypressRunHeadless - Saves the test and runs `cypress run --spec <spec>`.
+ * - ExecuteCypressRunHeadlessInput - Input type for the flow.
+ * - ExecuteCypressRunHeadlessOutput - Output type for the flow.
  */
 
 import { ai } from '@/ai/genkit';
@@ -14,29 +14,31 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { spawn } from 'child_process';
 
-const ExecuteCypressOpenInputSchema = z.object({
+const ExecuteCypressRunHeadlessInputSchema = z.object({
   testCode: z.string().describe('The Cypress test code to be saved and executed.'),
   repoPath: z.string().describe('The absolute local path to the cloned repository (Cypress project root).'),
   specFileName: z.string().describe('The desired file name for the spec, e.g., "user-login.cy.ts".'),
 });
-export type ExecuteCypressOpenInput = z.infer<typeof ExecuteCypressOpenInputSchema>;
+export type ExecuteCypressRunHeadlessInput = z.infer<typeof ExecuteCypressRunHeadlessInputSchema>;
 
-const ExecuteCypressOpenOutputSchema = z.object({
-  status: z.enum(['launched', 'error']).describe('Status of the Cypress run attempt.'),
+const ExecuteCypressRunHeadlessOutputSchema = z.object({
+  status: z.enum(['completed_successfully', 'completed_with_failures', 'error_running', 'error_saving_file'])
+    .describe('Status of the Cypress headless run attempt.'),
   message: z.string().describe('A message detailing the outcome.'),
   specPath: z.string().optional().describe('The full path to the saved spec file.'),
-  detailedErrorLog: z.string().optional().describe('More detailed log in case of an error during launch or run.'),
+  runSummary: z.string().optional().describe('Summary of the test run from Cypress output (e.g., pass/fail counts).'),
+  detailedLog: z.string().optional().describe('More detailed log in case of an error during launch or run.'),
 });
-export type ExecuteCypressOpenOutput = z.infer<typeof ExecuteCypressOpenOutputSchema>;
+export type ExecuteCypressRunHeadlessOutput = z.infer<typeof ExecuteCypressRunHeadlessOutputSchema>;
 
-async function executeCypressOpenLogic(input: ExecuteCypressOpenInput): Promise<ExecuteCypressOpenOutput> {
+async function executeCypressRunHeadlessLogic(input: ExecuteCypressRunHeadlessInput): Promise<ExecuteCypressRunHeadlessOutput> {
   const { testCode, repoPath, specFileName } = input;
 
   if (!fs.existsSync(repoPath)) {
-    return { 
-      status: 'error', 
+    return {
+      status: 'error_saving_file',
       message: `Repository path does not exist: ${repoPath}`,
-      detailedErrorLog: `Repository path check failed for: ${repoPath}`,
+      detailedLog: `Repository path check failed for: ${repoPath}`,
     };
   }
 
@@ -44,132 +46,98 @@ async function executeCypressOpenLogic(input: ExecuteCypressOpenInput): Promise<
   const specFilePath = path.join(cypressE2eDir, specFileName);
 
   try {
-    // Ensure the cypress/e2e directory exists
     if (!fs.existsSync(cypressE2eDir)) {
       fs.mkdirSync(cypressE2eDir, { recursive: true });
     }
-
-    // Save the test code to the spec file
     fs.writeFileSync(specFilePath, testCode, 'utf8');
   } catch (error: any) {
     return {
-      status: 'error',
+      status: 'error_saving_file',
       message: `Failed to save test file at ${specFilePath}: ${error.message}`,
-      detailedErrorLog: `File save error: ${error.message}\n${error.stack || ''}`,
+      detailedLog: `File save error: ${error.message}\n${error.stack || ''}`,
       specPath: specFilePath,
     };
   }
 
-  // Path to the spec file relative to the Cypress project root
   const relativeSpecPath = path.join('cypress', 'e2e', specFileName);
 
   return new Promise((resolve) => {
     let stdoutData = '';
     let stderrData = '';
-    // Changed: Use 'cypress run --headed --spec'
-    const cypressProcess = spawn('npx', ['cypress', 'run', '--headed', '--spec', relativeSpecPath], {
+    // Changed: Use 'cypress run --spec' for headless execution
+    const cypressProcess = spawn('npx', ['cypress', 'run', '--spec', relativeSpecPath], {
       cwd: repoPath,
-      detached: true, 
-      stdio: ['ignore', 'pipe', 'pipe'], 
+      stdio: ['ignore', 'pipe', 'pipe'], // Detached is not typically used for `cypress run` as we want to wait for completion
     });
-
-    cypressProcess.unref();
 
     cypressProcess.stdout?.on('data', (data) => {
       stdoutData += data.toString();
     });
-    
+
     cypressProcess.stderr?.on('data', (data) => {
       stderrData += data.toString();
     });
 
-    cypressProcess.on('error', (err) => {
+    cypressProcess.on('error', (err) => { // Error spawning the process
       resolve({
-        status: 'error',
-        message: `Failed to start Cypress: ${err.message}.`,
-        detailedErrorLog: `Spawn error: ${err.message}\nEnsure Cypress is installed in the project or globally and necessary dependencies (like browsers) are present.\nAssociated stderr (if any):\n${stderrData}`,
+        status: 'error_running',
+        message: `Failed to start Cypress headless run: ${err.message}.`,
+        detailedLog: `Spawn error: ${err.message}\nEnsure Cypress is installed and configured.\nStderr (if any):\n${stderrData}`,
         specPath: specFilePath,
       });
     });
 
-    cypressProcess.on('spawn', () => {
-         setTimeout(() => { 
-            if(cypressProcess.killed) return; 
+    cypressProcess.on('close', (code) => { // Process exited
+      const fullLog = `Exit Code: ${code}\n\nStdout:\n${stdoutData}\n\nStderr:\n${stderrData}`;
+      
+      if (stderrData.toLowerCase().includes('xvfb')) {
+        resolve({
+           status: 'error_running',
+           message: `Cypress Headless Run Failed: Xvfb dependency still reported. This is unexpected for headless mode.`,
+           detailedLog: `Xvfb error detected in stderr during headless run. This usually indicates a misconfiguration or an unusual Cypress setup problem.\n${fullLog.substring(0,1500)}`,
+           specPath: specFilePath,
+       });
+       return;
+      }
 
-            // Priority 1: Check for explicit errors from stderr
-            if (stderrData.toLowerCase().includes('xvfb')) { 
-                 resolve({
-                    status: 'error',
-                    message: `Cypress Headed Run Failed: Missing Xvfb dependency.`,
-                    detailedErrorLog: `Xvfb is required for headed Cypress execution in this environment. Please install Xvfb and try again. Error details:\n${stderrData.substring(0, 1000)}\nStdout (if any):\n${stdoutData.substring(0,500)}`,
-                    specPath: specFilePath,
-                });
-                return;
-            }
-            if (stderrData.toLowerCase().includes('cannot find module') || 
-                stderrData.toLowerCase().includes('no version of') || // e.g., no version of Chrome found
-                stderrData.toLowerCase().includes('failed to connect') ||
-                (stderrData.trim() !== '' && !stdoutData.toLowerCase().includes('run starting') && !stdoutData.toLowerCase().includes('running:'))) { 
-                 resolve({
-                    status: 'error',
-                    message: `Cypress run may have encountered an issue. Check the detailed log.`,
-                    detailedErrorLog: `Stderr output likely indicates an error:\n${stderrData.substring(0, 1000)} \nStdout:\n${stdoutData.substring(0,500)}`,
-                    specPath: specFilePath,
-                });
-                return;
-            }
-
-            // Priority 2: Check for positive stdout messages indicating run start
-            if (stdoutData.toLowerCase().includes('(run starting)') || stdoutData.toLowerCase().includes('running:') || stdoutData.toLowerCase().includes('devtools listening')) {
-                 resolve({
-                    status: 'launched',
-                    message: `Cypress headed test run initiated for spec: ${relativeSpecPath}. Check the browser window.`,
-                    specPath: specFilePath,
-                    detailedErrorLog: `Stdout (run initiated):\n${stdoutData.substring(0,500)}\nStderr (if any):\n${stderrData.substring(0,300)}`
-                });
-                return;
-            }
-            
-            // Priority 3: If stdout is empty AND stderr is empty after timeout (less likely for `cypress run`)
-            if (stdoutData.trim() === '' && stderrData.trim() === '') {
-                 resolve({
-                    status: 'launched', // Optimistic assumption
-                    message: `Cypress headed run initiated for spec: ${relativeSpecPath}. No immediate output; check for a browser window.`,
-                    specPath: specFilePath,
-                });
-                return;
-            }
-            
-            // Fallback: Some other stdout, no critical stderr. Assume launched if no known error patterns.
-            if (stdoutData.toLowerCase().includes('error:') || stdoutData.toLowerCase().includes('failed')) { // Check stdout for errors too
-                resolve({
-                    status: 'error',
-                    message: 'Cypress reported an issue on stdout during run initiation. Check detailed logs.',
-                    detailedErrorLog: `Stdout (potential error):\n${stdoutData.substring(0, 1000)}\nStderr (if any):\n${stderrData.substring(0,300)}`,
-                    specPath: specFilePath,
-                });
-                return;
-            }
-            
-            // Default to launched if no clear errors and some stdout activity that isn't an obvious error
-            resolve({
-                status: 'launched',
-                message: `Cypress headed test run initiated for spec: ${relativeSpecPath}. Check browser window.`,
-                specPath: specFilePath,
-                detailedErrorLog: `Stdout: ${stdoutData.substring(0, 500)}\nStderr (if any):\n${stderrData.substring(0,300)}`
-            });
-
-        }, 5000); // 5 seconds timeout
+      if (code === 0 && (stdoutData.includes('All specs passed!') || stdoutData.match(/\(\d+ passing\)/))) {
+        resolve({
+          status: 'completed_successfully',
+          message: `Cypress headless run for spec: ${relativeSpecPath} completed successfully.`,
+          specPath: specFilePath,
+          runSummary: stdoutData.substring(stdoutData.lastIndexOf('Run Summary'), stdoutData.lastIndexOf('Done running') !== -1 ? stdoutData.lastIndexOf('Done running') : undefined ) || 'Tests passed.',
+          detailedLog: fullLog.substring(0,1500),
+        });
+      } else if (code !== 0 || stdoutData.match(/\(\d+ failing\)/) || stderrData.trim() !== '') {
+         // Prioritize stderr for failure messages if present
+        const failureMessage = stderrData.trim() !== '' ? 
+            `Cypress headless run for spec: ${relativeSpecPath} likely failed. Check logs.` :
+            `Cypress headless run for spec: ${relativeSpecPath} completed with failures or errors. Exit code: ${code}.`;
+        resolve({
+          status: 'completed_with_failures',
+          message: failureMessage,
+          specPath: specFilePath,
+          runSummary: stdoutData.substring(stdoutData.lastIndexOf('Run Summary'), stdoutData.lastIndexOf('Done running') !== -1 ? stdoutData.lastIndexOf('Done running') : undefined ) || 'Tests completed with failures/errors.',
+          detailedLog: fullLog.substring(0,1500),
+        });
+      } else { // Should not happen if code is 0, but as a fallback
+        resolve({
+            status: 'error_running',
+            message: `Cypress headless run for spec: ${relativeSpecPath} finished with an unknown status. Exit code: ${code}.`,
+            specPath: specFilePath,
+            detailedLog: fullLog.substring(0,1500),
+        });
+      }
     });
   });
 }
 
-export const executeCypressOpen = ai.defineFlow(
+// Renaming the exported flow and the variable for clarity
+export const executeCypressRunHeadless = ai.defineFlow(
   {
-    name: 'executeCypressOpenFlow',
-    inputSchema: ExecuteCypressOpenInputSchema,
-    outputSchema: ExecuteCypressOpenOutputSchema,
+    name: 'executeCypressRunHeadlessFlow', // Changed name
+    inputSchema: ExecuteCypressRunHeadlessInputSchema,
+    outputSchema: ExecuteCypressRunHeadlessOutputSchema,
   },
-  executeCypressOpenLogic
+  executeCypressRunHeadlessLogic
 );
-
