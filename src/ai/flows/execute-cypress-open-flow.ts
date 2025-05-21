@@ -1,9 +1,9 @@
 
 'use server';
 /**
- * @fileOverview Saves a Cypress test file and attempts to open Cypress in headed mode.
+ * @fileOverview Saves a Cypress test file and attempts to run Cypress in headed mode.
  *
- * - executeCypressOpen - Saves the test and runs `cypress open`.
+ * - executeCypressOpen - Saves the test and runs `cypress run --headed --spec <spec>`.
  * - ExecuteCypressOpenInput - Input type for the flow.
  * - ExecuteCypressOpenOutput - Output type for the flow.
  */
@@ -22,10 +22,10 @@ const ExecuteCypressOpenInputSchema = z.object({
 export type ExecuteCypressOpenInput = z.infer<typeof ExecuteCypressOpenInputSchema>;
 
 const ExecuteCypressOpenOutputSchema = z.object({
-  status: z.enum(['launched', 'error', 'already-running']).describe('Status of the Cypress open attempt.'),
+  status: z.enum(['launched', 'error']).describe('Status of the Cypress run attempt.'),
   message: z.string().describe('A message detailing the outcome.'),
   specPath: z.string().optional().describe('The full path to the saved spec file.'),
-  detailedErrorLog: z.string().optional().describe('More detailed log in case of an error during launch.'),
+  detailedErrorLog: z.string().optional().describe('More detailed log in case of an error during launch or run.'),
 });
 export type ExecuteCypressOpenOutput = z.infer<typeof ExecuteCypressOpenOutputSchema>;
 
@@ -66,8 +66,8 @@ async function executeCypressOpenLogic(input: ExecuteCypressOpenInput): Promise<
   return new Promise((resolve) => {
     let stdoutData = '';
     let stderrData = '';
-    // Changed: Removed '--spec' flag, passing relativeSpecPath directly
-    const cypressProcess = spawn('npx', ['cypress', 'open', relativeSpecPath], {
+    // Changed: Use 'cypress run --headed --spec'
+    const cypressProcess = spawn('npx', ['cypress', 'run', '--headed', '--spec', relativeSpecPath], {
       cwd: repoPath,
       detached: true, 
       stdio: ['ignore', 'pipe', 'pipe'], 
@@ -77,18 +77,6 @@ async function executeCypressOpenLogic(input: ExecuteCypressOpenInput): Promise<
 
     cypressProcess.stdout?.on('data', (data) => {
       stdoutData += data.toString();
-      if (stdoutData.includes('Cypress App port is already in use') && !cypressProcess.killed) {
-        try {
-          process.kill(cypressProcess.pid!, 'SIGTERM'); 
-        } catch (e) {/* ignore */}
-        resolve({
-          status: 'already-running',
-          message: `Cypress appears to be already running for project at ${repoPath}. Please switch to the existing Cypress window. Spec: ${relativeSpecPath}`,
-          specPath: specFilePath,
-          detailedErrorLog: stdoutData,
-        });
-        return;
-      }
     });
     
     cypressProcess.stderr?.on('data', (data) => {
@@ -99,7 +87,7 @@ async function executeCypressOpenLogic(input: ExecuteCypressOpenInput): Promise<
       resolve({
         status: 'error',
         message: `Failed to start Cypress: ${err.message}.`,
-        detailedErrorLog: `Spawn error: ${err.message}\nEnsure Cypress is installed in the project or globally.\nAssociated stderr (if any):\n${stderrData}`,
+        detailedErrorLog: `Spawn error: ${err.message}\nEnsure Cypress is installed in the project or globally and necessary dependencies (like browsers) are present.\nAssociated stderr (if any):\n${stderrData}`,
         specPath: specFilePath,
       });
     });
@@ -109,57 +97,63 @@ async function executeCypressOpenLogic(input: ExecuteCypressOpenInput): Promise<
             if(cypressProcess.killed) return; 
 
             // Priority 1: Check for explicit errors from stderr
-            if (stderrData.trim() !== '') {
+            // For `cypress run`, stderr can also contain legitimate informational messages,
+            // so we need to be careful. However, if it clearly indicates a launch failure, prioritize it.
+            if (stderrData.toLowerCase().includes('cannot find module') || 
+                stderrData.toLowerCase().includes('no version of') || // e.g., no version of Chrome found
+                stderrData.toLowerCase().includes('xvfb') || // If Xvfb is still an issue for headed run
+                stderrData.toLowerCase().includes('failed to connect') ||
+                (stderrData.trim() !== '' && !stdoutData.toLowerCase().includes('run starting') && !stdoutData.toLowerCase().includes('running:'))) { // If stderr has content and stdout doesn't show signs of starting
                  resolve({
                     status: 'error',
-                    message: `Cypress may have encountered an issue. Check the detailed log.`,
-                    detailedErrorLog: `Stderr output:\n${stderrData.substring(0, 1000)}`,
+                    message: `Cypress run may have encountered an issue. Check the detailed log.`,
+                    detailedErrorLog: `Stderr output likely indicates an error:\n${stderrData.substring(0, 1000)} \nStdout:\n${stdoutData.substring(0,500)}`,
                     specPath: specFilePath,
                 });
                 return;
             }
 
-            // Priority 2: Check for positive stdout messages indicating launch
-            if (stdoutData.includes('Opening Cypress') || stdoutData.includes('Still waiting to connect to Cypress') || stdoutData.includes('already running')) {
+            // Priority 2: Check for positive stdout messages indicating run start
+            if (stdoutData.toLowerCase().includes('(run starting)') || stdoutData.toLowerCase().includes('running:') || stdoutData.toLowerCase().includes('devtools listening')) {
                  resolve({
                     status: 'launched',
-                    message: `Cypress launched for spec: ${relativeSpecPath}. Check the Cypress Test Runner window.`,
+                    message: `Cypress headed test run initiated for spec: ${relativeSpecPath}. Check the browser window.`,
                     specPath: specFilePath,
-                    detailedErrorLog: `Stdout: ${stdoutData.substring(0,200)}`
+                    detailedErrorLog: `Stdout (run initiated):\n${stdoutData.substring(0,500)}\nStderr (if any):\n${stderrData.substring(0,300)}`
                 });
                 return;
             }
             
-            // Priority 3: If stdout is empty AND stderr is empty after timeout
+            // Priority 3: If stdout is empty AND stderr is empty after timeout (less likely for `cypress run`)
             if (stdoutData.trim() === '' && stderrData.trim() === '') {
                  resolve({
-                    status: 'launched',
-                    message: `Cypress launch initiated for spec: ${relativeSpecPath}. No immediate output from Cypress; check your Cypress window.`,
-                    specPath: specFilePath,
-                });
-                return;
-            }
-
-            // Fallback: Some other stdout, no stderr. Assume launched if no known error patterns in stdout.
-            // Check stdout for common error indicators that might not go to stderr.
-            if (stdoutData.toLowerCase().includes('error:') || stdoutData.toLowerCase().includes('failed to open')) {
-                resolve({
-                    status: 'error',
-                    message: 'Cypress reported an issue on stdout. Check detailed logs.',
-                    detailedErrorLog: `Stdout (potential error):\n${stdoutData.substring(0, 1000)}`,
+                    status: 'launched', // Optimistic assumption
+                    message: `Cypress headed run initiated for spec: ${relativeSpecPath}. No immediate output; check for a browser window.`,
                     specPath: specFilePath,
                 });
                 return;
             }
             
+            // Fallback: Some other stdout, no critical stderr. Assume launched if no known error patterns.
+            if (stdoutData.toLowerCase().includes('error:') || stdoutData.toLowerCase().includes('failed')) { // Check stdout for errors too
+                resolve({
+                    status: 'error',
+                    message: 'Cypress reported an issue on stdout during run initiation. Check detailed logs.',
+                    detailedErrorLog: `Stdout (potential error):\n${stdoutData.substring(0, 1000)}\nStderr (if any):\n${stderrData.substring(0,300)}`,
+                    specPath: specFilePath,
+                });
+                return;
+            }
+            
+            // Default to launched if no clear errors and some stdout activity that isn't an obvious error
             resolve({
                 status: 'launched',
-                message: `Cypress launch initiated for spec: ${relativeSpecPath}. Check Cypress window.`,
+                message: `Cypress headed test run initiated for spec: ${relativeSpecPath}. Check browser window.`,
                 specPath: specFilePath,
-                detailedErrorLog: `Stdout: ${stdoutData.substring(0, 200)}`
+                detailedErrorLog: `Stdout: ${stdoutData.substring(0, 500)}\nStderr (if any):\n${stderrData.substring(0,300)}`
             });
 
-        }, 5000); // Increased timeout to 5 seconds
+        }, 5000); // 5 seconds timeout
     });
   });
 }
