@@ -11,12 +11,12 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Textarea } from "@/components/ui/textarea";
+// Removed Textarea import as it's no longer used for app description
 import { useToast } from "@/hooks/use-toast";
 import type { TestType } from '@/lib/constants';
 import { generateCypressTest, type GenerateCypressTestInput, type GenerateCypressTestOutput } from '@/ai/flows/generate-cypress-test';
-import { identifyUserFlows, type IdentifyUserFlowsInput, type IdentifyUserFlowsOutput } from '@/ai/flows/identify-user-flows-flow';
-import { Github, Link as LinkIcon, ListTree, TestTubeDiagonal, Wand2, Play, Loader2, CheckCircle2, XCircle, AlertTriangle, FileText } from 'lucide-react';
+import { identifyUserFlows, type IdentifyUserFlowsInput, type IdentifyUserFlowsOutput } from '@/ai/flows/identify-user-flows-flow'; // identifyUserFlows is now the Genkit flow
+import { Github, Link as LinkIcon, ListTree, TestTubeDiagonal, Wand2, Play, Loader2, CheckCircle2, XCircle, AlertTriangle, FileText, GitFork } from 'lucide-react';
 
 interface TestResult {
   status: 'success' | 'failure' | 'pending';
@@ -27,10 +27,11 @@ interface TestResult {
 
 export default function CypressPilotPage() {
   const [appUrl, setAppUrl] = useState<string>('https://myapp.example.com');
-  const [repoUrl, setRepoUrl] = useState<string>('https://github.com/myorg/myapp'); // Kept for context, though not directly used for cloning
-  const [applicationDescription, setApplicationDescription] = useState<string>('');
+  const [repoUrl, setRepoUrl] = useState<string>('https://github.com/myorg/myapp');
+  // applicationDescription state is removed
   
   const [isAnalyzing, setIsAnalyzing] = useState<boolean>(false);
+  const [analysisLog, setAnalysisLog] = useState<string | null>(null);
   const [userFlows, setUserFlows] = useState<string[]>([]);
   const [selectedFlow, setSelectedFlow] = useState<string | null>(null);
   const [selectedTestType, setSelectedTestType] = useState<TestType | null>(null);
@@ -43,9 +44,9 @@ export default function CypressPilotPage() {
 
   const { toast } = useToast();
 
-  const handleAnalyzeAppStructure = async () => {
-    if (!appUrl || !applicationDescription) {
-      toast({ title: "Missing Information", description: "Please provide App URL and Application Structure Description.", variant: "destructive" });
+  const handleAnalyzeRepo = async () => {
+    if (!repoUrl) { // Only repoUrl is mandatory for analysis now
+      toast({ title: "Missing Repository URL", description: "Please provide the GitHub Repository URL.", variant: "destructive" });
       return;
     }
     setIsAnalyzing(true);
@@ -53,26 +54,31 @@ export default function CypressPilotPage() {
     setSelectedFlow(null);
     setTestResult(null);
     setGeneratedTestCode(null);
+    setAnalysisLog("Starting repository analysis...\n");
     
     try {
       const input: IdentifyUserFlowsInput = {
-        applicationDescription,
-        appUrl,
+        repoUrl,
+        appUrl: appUrl || undefined, // appUrl is optional for analysis
       };
+      // Call the Genkit flow directly
       const output: IdentifyUserFlowsOutput = await identifyUserFlows(input);
       
+      setAnalysisLog(prev => prev + (output.analysisLog || "Analysis complete.\n"));
+
       if (output.identifiedFlows && output.identifiedFlows.length > 0) {
         setUserFlows(output.identifiedFlows);
         setSelectedFlow(output.identifiedFlows[0] || null);
-        toast({ title: "Analysis Complete", description: "User flows identified based on your description. Please select a flow and test type." });
+        toast({ title: "Analysis Complete", description: "User flows identified from the repository. Please select a flow and test type." });
       } else {
         setUserFlows([]);
-        toast({ title: "No Flows Identified", description: "The AI could not identify user flows from the provided description. Try to be more specific or provide more details.", variant: "default" });
+        toast({ title: "No Flows Identified", description: "The AI could not identify user flows from the repository analysis. The repository might be empty, structured unusually, or the analysis tool might need refinement.", variant: "default" });
       }
-    } catch (error) {
-      console.error("Error identifying user flows:", error);
+    } catch (error: any) {
+      console.error("Error identifying user flows from repo:", error);
       setUserFlows([]);
-      toast({ title: "Analysis Failed", description: "Could not identify user flows. Please try again or refine your description.", variant: "destructive" });
+      setAnalysisLog(prev => prev + `Error during analysis: ${error.message}\n`);
+      toast({ title: "Analysis Failed", description: `Could not identify user flows: ${error.message || 'Unknown error'}. Check console for details.`, variant: "destructive" });
     }
     setIsAnalyzing(false);
   };
@@ -89,8 +95,8 @@ export default function CypressPilotPage() {
       const input: GenerateCypressTestInput = {
         flowDescription: selectedFlow,
         testType: selectedTestType,
-        // Repo URL is passed for context to the generation prompt
-        applicationDetails: `App URL: ${appUrl}, GitHub Repo: ${repoUrl}. Key application structure: ${applicationDescription.substring(0, 500)}...`,
+        // Removed applicationDescription. LLM can infer from flow & URLs.
+        applicationDetails: `App URL: ${appUrl}, GitHub Repo: ${repoUrl}`, 
       };
       const output: GenerateCypressTestOutput = await generateCypressTest(input);
       setGeneratedTestCode(output.testCode);
@@ -141,38 +147,42 @@ export default function CypressPilotPage() {
           <div className="space-y-6 md:space-y-8">
             <Card className="shadow-lg">
               <CardHeader>
-                <CardTitle className="text-2xl">1. Describe Application</CardTitle>
-                <CardDescription>Provide your application details and structure to identify user flows.</CardDescription>
+                <CardTitle className="text-2xl">1. Configure Application</CardTitle>
+                <CardDescription>Provide your application and repository details.</CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="space-y-2">
-                  <Label htmlFor="appUrl" className="flex items-center"><LinkIcon className="mr-2 h-4 w-4 text-muted-foreground" />App URL</Label>
+                  <Label htmlFor="appUrl" className="flex items-center"><LinkIcon className="mr-2 h-4 w-4 text-muted-foreground" />App URL (Optional for analysis, required for test)</Label>
                   <Input id="appUrl" placeholder="https://myapp.example.com" value={appUrl} onChange={(e) => setAppUrl(e.target.value)} />
                 </div>
                 <div className="space-y-2">
-                  <Label htmlFor="repoUrl" className="flex items-center"><Github className="mr-2 h-4 w-4 text-muted-foreground" />GitHub Repo URL (for context)</Label>
+                  <Label htmlFor="repoUrl" className="flex items-center"><Github className="mr-2 h-4 w-4 text-muted-foreground" />GitHub Repo URL (Public)</Label>
                   <Input id="repoUrl" placeholder="https://github.com/myorg/myapp" value={repoUrl} onChange={(e) => setRepoUrl(e.target.value)} />
+                   <p className="text-xs text-muted-foreground">The application will attempt to clone and analyze this public repository.</p>
                 </div>
-                 <div className="space-y-2">
-                  <Label htmlFor="appDescription" className="flex items-center"><FileText className="mr-2 h-4 w-4 text-muted-foreground" />Application Structure / Code Snippets</Label>
-                  <Textarea 
-                    id="appDescription" 
-                    placeholder="Paste relevant details here: e.g., main route definitions, key component names, or snippets from important files like page.tsx or App.tsx..." 
-                    value={applicationDescription} 
-                    onChange={(e) => setApplicationDescription(e.target.value)}
-                    rows={8}
-                    className="max-h-60"
-                  />
-                  <p className="text-xs text-muted-foreground">Provide enough detail for the AI to understand user interaction points.</p>
-                </div>
+                {/* Textarea for appDescription removed */}
               </CardContent>
               <CardFooter>
-                <Button onClick={handleAnalyzeAppStructure} disabled={isAnalyzing || !applicationDescription} className="w-full bg-primary hover:bg-primary/90 text-primary-foreground">
-                  {isAnalyzing ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ListTree className="mr-2 h-4 w-4" />}
-                  {isAnalyzing ? 'Analyzing Description...' : 'Identify Flows from Description'}
+                <Button onClick={handleAnalyzeRepo} disabled={isAnalyzing || !repoUrl} className="w-full bg-primary hover:bg-primary/90 text-primary-foreground">
+                  {isAnalyzing ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <GitFork className="mr-2 h-4 w-4" />}
+                  {isAnalyzing ? 'Analyzing Repository...' : 'Analyze Repository & Identify Flows'}
                 </Button>
               </CardFooter>
             </Card>
+            
+            {isAnalyzing && analysisLog && (
+              <Card className="shadow-md">
+                <CardHeader>
+                  <CardTitle className="text-lg">Analysis Log</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <ScrollArea className="h-40 w-full rounded-md border bg-muted/30 p-3">
+                    <pre className="text-xs font-mono whitespace-pre-wrap break-all">{analysisLog}</pre>
+                  </ScrollArea>
+                </CardContent>
+              </Card>
+            )}
+
 
             {userFlows.length > 0 && (
               <Card className="shadow-lg">
@@ -216,10 +226,10 @@ export default function CypressPilotPage() {
                 </CardFooter>
               </Card>
             )}
-            {isAnalyzing && userFlows.length === 0 && (
+            {isAnalyzing && userFlows.length === 0 && !analysisLog && ( // Show this only if analysis log hasn't started
                  <div className="flex flex-col items-center justify-center h-40 border border-dashed rounded-md p-4">
                     <Loader2 className="h-10 w-10 animate-spin text-primary mb-3" />
-                    <p className="text-muted-foreground text-center">AI is analyzing your application description to identify user flows...</p>
+                    <p className="text-muted-foreground text-center">Preparing to analyze repository...</p>
                 </div>
             )}
           </div>
@@ -296,26 +306,26 @@ export default function CypressPilotPage() {
                 </CardContent>
               </Card>
             )}
-             { !isAnalyzing && !isGeneratingTest && !generatedTestCode && userFlows.length === 0 && applicationDescription && (
+             { !isAnalyzing && !isGeneratingTest && !generatedTestCode && userFlows.length === 0 && repoUrl && (
                 <Card className="shadow-lg">
                     <CardHeader>
                         <CardTitle className="text-xl">Next Steps</CardTitle>
                     </CardHeader>
                     <CardContent>
                         <p className="text-muted-foreground">
-                            User flows identified from your description will appear here. If no flows are shown, try providing more detailed information about your application's routes, components, and typical user interactions in the text area above and click "Identify Flows from Description" again.
+                            If no flows were identified after analysis, the repository might be structured in an unexpected way, it could be empty, or the AI might need more specific guidance (which could be a future enhancement). Try a different public repository or check the analysis log for details.
                         </p>
                     </CardContent>
                 </Card>
             )}
-             { !applicationDescription && !isAnalyzing && !isGeneratingTest && (
+             { !repoUrl && !isAnalyzing && !isGeneratingTest && (
                  <Card className="shadow-lg">
                     <CardHeader>
                         <CardTitle className="text-xl">Get Started</CardTitle>
                     </CardHeader>
                     <CardContent>
                         <p className="text-muted-foreground">
-                           Provide your application's URL and a description of its structure or key code snippets in section 1. Then, click "Identify Flows from Description" to use AI to suggest user flows for test generation.
+                           Provide a public GitHub repository URL in section 1. Then, click "Analyze Repository & Identify Flows" to use AI to clone, analyze its structure, and suggest user flows for test generation.
                         </p>
                     </CardContent>
                 </Card>

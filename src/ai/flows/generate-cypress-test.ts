@@ -1,3 +1,4 @@
+
 'use server';
 
 /**
@@ -14,7 +15,9 @@ import {z} from 'genkit';
 const GenerateCypressTestInputSchema = z.object({
   flowDescription: z.string().describe('The description of the user flow to test.'),
   testType: z.enum(['E2E', 'Component']).describe('The type of test to generate: E2E or Component.'),
-  applicationDetails: z.string().describe('Details about the application including the URL and repository link.'),
+  // applicationDescription removed as it's no longer manually provided.
+  // The LLM should infer from repoUrl and appUrl if needed, or from the flowDescription itself.
+  applicationDetails: z.string().describe('Details about the application including the App URL and repository URL.'),
 });
 export type GenerateCypressTestInput = z.infer<typeof GenerateCypressTestInputSchema>;
 
@@ -35,7 +38,7 @@ const prompt = ai.definePrompt({
 
   User Flow Description: {{{flowDescription}}}
   Test Type: {{{testType}}}
-  Application Details: {{{applicationDetails}}}
+  Application Details (App URL, Repo URL): {{{applicationDetails}}}
 
   Ensure the generated code is valid Cypress code and includes appropriate assertions to validate the user flow.
   Return only the code, do not include explanations or comments outside of the test code.
