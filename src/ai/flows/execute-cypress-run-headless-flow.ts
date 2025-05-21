@@ -3,6 +3,7 @@
 /**
  * @fileOverview Saves a Cypress test file and attempts to run Cypress headlessly,
  * trying Chrome first, then Firefox if Chrome encounters Xvfb issues, and disabling video recording.
+ * Also adds Electron-specific environment variables to promote headless behavior.
  *
  * - executeCypressRunHeadless - Saves the test and runs `cypress run --headless --browser <browser> --spec <spec> --config video=false`.
  * - ExecuteCypressRunHeadlessInput - Input type for the flow.
@@ -48,19 +49,21 @@ async function tryCypressRunAttempt(
     // Add --config video=false to the arguments for the specified browser and headless mode
     const cypressArgs = [...baseCypressArgs, '--browser', browserName, '--headless', '--config', 'video=false', '--spec', relativeSpecPath];
     let attemptLog = `Attempting with ${browserName}: npx cypress ${cypressArgs.join(' ')}\n`;
+    attemptLog += `Spawn options env: ${JSON.stringify(spawnOptions.env)}\n`;
+
 
     const cypressProcess = spawn('npx', ['cypress', ...cypressArgs], spawnOptions);
 
     cypressProcess.stdout?.on('data', (data) => {
       const line = data.toString();
       stdoutData += line;
-      attemptLog += `STDOUT: ${line}\n`; 
+      attemptLog += `STDOUT: ${line}\n`;
     });
 
     cypressProcess.stderr?.on('data', (data) => {
       const line = data.toString();
       stderrData += line;
-      attemptLog += `STDERR: ${line}\n`; 
+      attemptLog += `STDERR: ${line}\n`;
     });
 
     cypressProcess.on('error', (err) => {
@@ -156,27 +159,33 @@ async function executeCypressRunHeadlessLogic(input: ExecuteCypressRunHeadlessIn
   const relativeSpecPath = path.join('cypress', 'e2e', specFileName);
   const commonSpawnOptions: { cwd: string; stdio: StdioOptions; env: Record<string, string | undefined> } = {
     cwd: repoPath,
-    stdio: ['ignore', 'pipe', 'pipe'], 
-    env: { ...process.env, DISPLAY: '' }, 
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: {
+      ...process.env,
+      DISPLAY: '', // Keep this
+      ELECTRON_RUN_AS_NODE: '1',
+      ELECTRON_EXTRA_LAUNCH_ARGS: '--headless --disable-gpu --no-sandbox',
+      CYPRESS_REMOTE_DEBUGGING_PORT: '0',
+    },
   };
-  
-  let cumulativeLog = "Starting Cypress headless execution attempts...\n";
-  const baseArgs = ['run']; 
 
-  // Attempt 1: Chrome Headless with video disabled
-  cumulativeLog += "\n--- Attempting with Chrome headless (video disabled) ---\n";
+  let cumulativeLog = "Starting Cypress headless execution attempts...\n";
+  const baseArgs = ['run'];
+
+  // Attempt 1: Chrome Headless with video disabled and extra Electron flags
+  cumulativeLog += "\n--- Attempting with Chrome headless (video disabled, Electron flags) ---\n";
   let attemptResult = await tryCypressRunAttempt(baseArgs, 'chrome', commonSpawnOptions, specFilePath, relativeSpecPath);
   cumulativeLog += attemptResult.log;
 
   if (attemptResult.status === 'ok' || (attemptResult.status === 'error_generic' && attemptResult.output.status !== 'error_running')) {
     return { ...attemptResult.output, detailedLog: (cumulativeLog + "\nFinal Result from Chrome attempt:\n" + (attemptResult.output.detailedLog || "")) };
   }
-  
-  cumulativeLog += "\n--- Chrome headless (video disabled) attempt encountered issues. Attempting with Firefox headless (video disabled) ---\n";
+
+  cumulativeLog += "\n--- Chrome headless (video disabled, Electron flags) attempt encountered issues. Attempting with Firefox headless (video disabled, Electron flags) ---\n";
   attemptResult = await tryCypressRunAttempt(baseArgs, 'firefox', commonSpawnOptions, specFilePath, relativeSpecPath);
   cumulativeLog += attemptResult.log;
-  
-  const finalMessage = attemptResult.status === 'ok' ? attemptResult.output.message : `${attemptResult.output.message} (after trying Chrome then Firefox, both with video disabled).`;
+
+  const finalMessage = attemptResult.status === 'ok' ? attemptResult.output.message : `${attemptResult.output.message} (after trying Chrome then Firefox, both with video disabled and Electron flags).`;
   const finalDetailedLog = (cumulativeLog + "\nFinal Result from Firefox attempt:\n" + (attemptResult.output.detailedLog || ""));
 
   return { ...attemptResult.output, message: finalMessage, detailedLog: finalDetailedLog };
@@ -184,7 +193,7 @@ async function executeCypressRunHeadlessLogic(input: ExecuteCypressRunHeadlessIn
 
 export const executeCypressRunHeadless = ai.defineFlow(
   {
-    name: 'executeCypressRunHeadlessFlow', 
+    name: 'executeCypressRunHeadlessFlow',
     inputSchema: ExecuteCypressRunHeadlessInputSchema,
     outputSchema: ExecuteCypressRunHeadlessOutputSchema,
   },
