@@ -1,4 +1,4 @@
-// use server'
+'use server';
 
 /**
  * @fileOverview Generates Cypress test code from a user flow description.
