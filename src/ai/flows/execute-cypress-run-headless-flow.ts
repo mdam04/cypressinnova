@@ -2,9 +2,9 @@
 'use server';
 /**
  * @fileOverview Saves a Cypress test file and attempts to run Cypress headlessly,
- * trying Chrome first, then Firefox if Chrome encounters Xvfb issues.
+ * trying Chrome first, then Firefox if Chrome encounters Xvfb issues, and disabling video recording.
  *
- * - executeCypressRunHeadless - Saves the test and runs `cypress run --headless --browser <browser> --spec <spec>`.
+ * - executeCypressRunHeadless - Saves the test and runs `cypress run --headless --browser <browser> --spec <spec> --config video=false`.
  * - ExecuteCypressRunHeadlessInput - Input type for the flow.
  * - ExecuteCypressRunHeadlessOutput - Output type for the flow.
  */
@@ -36,15 +36,17 @@ export type ExecuteCypressRunHeadlessOutput = z.infer<typeof ExecuteCypressRunHe
 
 // Helper function to attempt a single Cypress run configuration
 async function tryCypressRunAttempt(
-  cypressArgs: string[],
+  baseCypressArgs: string[], // Base args like run
+  browserName: string,
   spawnOptions: { cwd: string; stdio: StdioOptions; env: Record<string, string | undefined> },
   specFilePath: string,
-  relativeSpecPath: string,
-  browserName: string
+  relativeSpecPath: string
 ): Promise<{ status: 'ok' | 'error_xvfb' | 'error_generic'; output: ExecuteCypressRunHeadlessOutput; log: string }> {
   return new Promise((resolve) => {
     let stdoutData = '';
     let stderrData = '';
+    // Add --config video=false to the arguments for the specified browser and headless mode
+    const cypressArgs = [...baseCypressArgs, '--browser', browserName, '--headless', '--config', 'video=false', '--spec', relativeSpecPath];
     let attemptLog = `Attempting with ${browserName}: npx cypress ${cypressArgs.join(' ')}\n`;
 
     const cypressProcess = spawn('npx', ['cypress', ...cypressArgs], spawnOptions);
@@ -52,13 +54,13 @@ async function tryCypressRunAttempt(
     cypressProcess.stdout?.on('data', (data) => {
       const line = data.toString();
       stdoutData += line;
-      attemptLog += `STDOUT: ${line.substring(0, 200).trimEnd()}\n`;
+      attemptLog += `STDOUT: ${line}\n`; 
     });
 
     cypressProcess.stderr?.on('data', (data) => {
       const line = data.toString();
       stderrData += line;
-      attemptLog += `STDERR: ${line.substring(0, 200).trimEnd()}\n`;
+      attemptLog += `STDERR: ${line}\n`; 
     });
 
     cypressProcess.on('error', (err) => {
@@ -76,10 +78,10 @@ async function tryCypressRunAttempt(
     });
 
     cypressProcess.on('close', (code) => {
-      const fullLog = `Browser: ${browserName}\nExit Code: ${code}\n\nStdout:\n${stdoutData}\n\nStderr:\n${stderrData}`;
+      const fullLog = `Browser: ${browserName}\nCommand: npx cypress ${cypressArgs.join(' ')}\nExit Code: ${code}\n\nStdout:\n${stdoutData}\n\nStderr:\n${stderrData}`;
       attemptLog += `Process for ${browserName} closed with code ${code}\n`;
 
-      if (stderrData.toLowerCase().includes('xvfb') && stderrData.toLowerCase().includes('missing the dependency')) {
+      if (stderrData.toLowerCase().includes('xvfb') && (stderrData.toLowerCase().includes('missing the dependency') || stderrData.toLowerCase().includes('spawn xvfb enoent'))) {
         resolve({
           status: 'error_xvfb',
           log: attemptLog,
@@ -154,29 +156,27 @@ async function executeCypressRunHeadlessLogic(input: ExecuteCypressRunHeadlessIn
   const relativeSpecPath = path.join('cypress', 'e2e', specFileName);
   const commonSpawnOptions: { cwd: string; stdio: StdioOptions; env: Record<string, string | undefined> } = {
     cwd: repoPath,
-    stdio: ['ignore', 'pipe', 'pipe'],
-    env: { ...process.env, DISPLAY: '' },
+    stdio: ['ignore', 'pipe', 'pipe'], 
+    env: { ...process.env, DISPLAY: '' }, 
   };
   
   let cumulativeLog = "Starting Cypress headless execution attempts...\n";
+  const baseArgs = ['run']; 
 
-  // Attempt 1: Chrome Headless
-  cumulativeLog += "\n--- Attempting with Chrome headless ---\n";
-  const chromeArgs = ['run', '--browser', 'chrome', '--headless', '--spec', relativeSpecPath];
-  let attemptResult = await tryCypressRunAttempt(chromeArgs, commonSpawnOptions, specFilePath, relativeSpecPath, 'Chrome');
+  // Attempt 1: Chrome Headless with video disabled
+  cumulativeLog += "\n--- Attempting with Chrome headless (video disabled) ---\n";
+  let attemptResult = await tryCypressRunAttempt(baseArgs, 'chrome', commonSpawnOptions, specFilePath, relativeSpecPath);
   cumulativeLog += attemptResult.log;
 
   if (attemptResult.status === 'ok' || (attemptResult.status === 'error_generic' && attemptResult.output.status !== 'error_running')) {
     return { ...attemptResult.output, detailedLog: (cumulativeLog + "\nFinal Result from Chrome attempt:\n" + (attemptResult.output.detailedLog || "")) };
   }
   
-
-  cumulativeLog += "\n--- Chrome headless attempt encountered issues (likely Xvfb or startup). Attempting with Firefox headless ---\n";
-  const firefoxArgs = ['run', '--browser', 'firefox', '--headless', '--spec', relativeSpecPath];
-  attemptResult = await tryCypressRunAttempt(firefoxArgs, commonSpawnOptions, specFilePath, relativeSpecPath, 'Firefox');
+  cumulativeLog += "\n--- Chrome headless (video disabled) attempt encountered issues. Attempting with Firefox headless (video disabled) ---\n";
+  attemptResult = await tryCypressRunAttempt(baseArgs, 'firefox', commonSpawnOptions, specFilePath, relativeSpecPath);
   cumulativeLog += attemptResult.log;
   
-  const finalMessage = attemptResult.status === 'ok' ? attemptResult.output.message : `${attemptResult.output.message} (after trying Chrome then Firefox).`;
+  const finalMessage = attemptResult.status === 'ok' ? attemptResult.output.message : `${attemptResult.output.message} (after trying Chrome then Firefox, both with video disabled).`;
   const finalDetailedLog = (cumulativeLog + "\nFinal Result from Firefox attempt:\n" + (attemptResult.output.detailedLog || ""));
 
   return { ...attemptResult.output, message: finalMessage, detailedLog: finalDetailedLog };
