@@ -22,7 +22,7 @@ interface TestRunStatus {
   status: 'idle' | 'launching' | 'launched' | 'error' | 'already-running';
   message: string;
   specPath?: string;
-  logs?: string; // For initial messages or errors from the launch attempt
+  logs?: string; 
 }
 
 // Helper to sanitize flow names for filenames
@@ -89,7 +89,7 @@ export default function CypressPilotPage() {
       console.error("Error identifying user flows from repo:", error);
       setUserFlows([]);
       setClonedRepoPath(null);
-      setAnalysisLog(prev => prev + `Error during analysis: ${error.message}\n`);
+      setAnalysisLog(prev => prev + `Error during analysis: ${error.message}\n${error.stack || ''}\n`);
       toast({ title: "Analysis Failed", description: `Could not identify user flows: ${error.message || 'Unknown error'}. Check console and analysis log.`, variant: "destructive" });
     }
     setIsAnalyzing(false);
@@ -112,9 +112,9 @@ export default function CypressPilotPage() {
       const output: GenerateCypressTestOutput = await generateCypressTest(input);
       setGeneratedTestCode(output.testCode);
       toast({ title: "Test Generated", description: "Cypress test code has been successfully generated." });
-    } catch (error) {
+    } catch (error: any) {
       console.error("Error generating test:", error);
-      toast({ title: "Generation Failed", description: "Could not generate the Cypress test. Please try again.", variant: "destructive" });
+      toast({ title: "Generation Failed", description: `Could not generate the Cypress test: ${error.message || 'Unknown error'}. Please try again.`, variant: "destructive" });
     }
     setIsGeneratingTest(false);
   };
@@ -149,14 +149,14 @@ export default function CypressPilotPage() {
         status: output.status,
         message: output.message,
         specPath: output.specPath,
-        logs: output.message, // Use the message from the flow as primary log here
+        logs: output.detailedErrorLog || output.message, 
       });
 
       if (output.status === 'launched') {
         toast({ title: "Cypress Launched", description: `Check the Cypress Test Runner window for ${specFileName}.` });
       } else if (output.status === 'already-running') {
         toast({ title: "Cypress Already Running", description: output.message, variant: "default" });
-      } else {
+      } else { // 'error' status
         toast({ title: "Cypress Launch Error", description: output.message, variant: "destructive" });
       }
 
@@ -165,7 +165,7 @@ export default function CypressPilotPage() {
       setTestRunStatus({
         status: 'error',
         message: `Failed to launch Cypress: ${error.message || 'Unknown error'}`,
-        logs: `Error: ${error.message || 'Unknown error'}. Check console for details.`,
+        logs: `Error: ${error.message || 'Unknown error'}.\n${error.stack || ''}. Check console for details.`,
       });
       toast({ title: "Launch Failed", description: `Could not launch Cypress: ${error.message || 'Unknown error'}.`, variant: "destructive" });
     }
@@ -203,7 +203,7 @@ export default function CypressPilotPage() {
               </CardFooter>
             </Card>
             
-            {isAnalyzing && analysisLog && (
+            {analysisLog && ( // Show analysis log if it's not null (even if analyzing is done)
               <Card className="shadow-md">
                 <CardHeader>
                   <CardTitle className="text-lg">Analysis Log</CardTitle>
@@ -258,7 +258,7 @@ export default function CypressPilotPage() {
                 </CardFooter>
               </Card>
             )}
-            {isAnalyzing && userFlows.length === 0 && !analysisLog?.includes("cloned to:") && (
+            {isAnalyzing && userFlows.length === 0 && !analysisLog?.includes("cloned to:") && ( // Message during initial cloning/analysis phase
                  <div className="flex flex-col items-center justify-center h-40 border border-dashed rounded-md p-4">
                     <Loader2 className="h-10 w-10 animate-spin text-primary mb-3" />
                     <p className="text-muted-foreground text-center">Preparing to analyze repository...</p>
@@ -303,6 +303,7 @@ export default function CypressPilotPage() {
                          <div className="flex flex-col items-center justify-center h-40 border border-dashed rounded-md">
                             <Loader2 className="h-10 w-10 animate-spin text-accent mb-3" />
                             <p className="text-muted-foreground">Launching Cypress...</p>
+                            {testRunStatus.logs && <p className="text-xs text-muted-foreground mt-2">{testRunStatus.logs}</p>}
                         </div>
                       )}
                       {testRunStatus.status !== 'launching' && testRunStatus.status !== 'idle' && (
@@ -311,7 +312,8 @@ export default function CypressPilotPage() {
                             className={
                                 testRunStatus.status === 'launched' ? 'bg-green-50 dark:bg-green-900/30 border-green-300 dark:border-green-700' 
                                 : testRunStatus.status === 'already-running' ? 'bg-blue-50 dark:bg-blue-900/30 border-blue-300 dark:border-blue-700'
-                                : 'bg-red-50 dark:bg-red-900/30 border-red-300 dark:border-red-700' 
+                                : testRunStatus.status === 'error' ? 'bg-red-50 dark:bg-red-900/30 border-red-300 dark:border-red-700'
+                                : '' // Default styling if needed for other statuses
                             }
                         >
                           {testRunStatus.status === 'launched' && <CheckCircle2 className="h-5 w-5 text-green-600 dark:text-green-400" />}
@@ -321,17 +323,19 @@ export default function CypressPilotPage() {
                           <AlertTitle className={`font-semibold ${
                             testRunStatus.status === 'launched' ? 'text-green-700 dark:text-green-300'
                             : testRunStatus.status === 'already-running' ? 'text-blue-700 dark:text-blue-300'
-                            : 'text-red-700 dark:text-red-300'
+                            : testRunStatus.status === 'error' ? 'text-red-700 dark:text-red-300'
+                            : ''
                           }`}>
                             {testRunStatus.status === 'launched' ? 'Cypress Launched' : 
                              testRunStatus.status === 'already-running' ? 'Cypress Likely Already Running' :
-                             'Cypress Launch Error'}
+                             testRunStatus.status === 'error' ? 'Cypress Launch Error' :
+                             'Cypress Status'}
                           </AlertTitle>
                           <AlertDescription className="mt-2 text-sm">
                             <p>{testRunStatus.message}</p>
                             {testRunStatus.specPath && <p className="mt-1">Spec file: <code className="font-mono text-xs bg-muted p-1 rounded">{testRunStatus.specPath}</code></p>}
-                             {testRunStatus.logs && testRunStatus.status === 'error' && (
-                                 <ScrollArea className="h-24 max-h-32 rounded-md bg-background/50 p-2 border mt-2">
+                             {testRunStatus.logs && (testRunStatus.status === 'error' || testRunStatus.status === 'already-running' || testRunStatus.status === 'launched') && (
+                                 <ScrollArea className="h-24 max-h-48 rounded-md bg-background/50 p-2 border mt-2">
                                     <pre className="text-xs font-mono whitespace-pre-wrap break-all">
                                     {testRunStatus.logs}
                                     </pre>
@@ -375,4 +379,3 @@ export default function CypressPilotPage() {
     </div>
   );
 }
-
