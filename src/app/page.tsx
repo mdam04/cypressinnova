@@ -1,3 +1,4 @@
+
 "use client";
 
 import React, { useState, useEffect } from 'react';
@@ -10,10 +11,12 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
-import { MOCK_USER_FLOWS, type TestType } from '@/lib/constants';
+import type { TestType } from '@/lib/constants';
 import { generateCypressTest, type GenerateCypressTestInput, type GenerateCypressTestOutput } from '@/ai/flows/generate-cypress-test';
-import { Github, Link as LinkIcon, ListTree, TestTubeDiagonal, Wand2, Play, Loader2, CheckCircle2, XCircle, AlertTriangle, TestTube2Icon } from 'lucide-react';
+import { identifyUserFlows, type IdentifyUserFlowsInput, type IdentifyUserFlowsOutput } from '@/ai/flows/identify-user-flows-flow';
+import { Github, Link as LinkIcon, ListTree, TestTubeDiagonal, Wand2, Play, Loader2, CheckCircle2, XCircle, AlertTriangle, FileText } from 'lucide-react';
 
 interface TestResult {
   status: 'success' | 'failure' | 'pending';
@@ -24,7 +27,9 @@ interface TestResult {
 
 export default function CypressPilotPage() {
   const [appUrl, setAppUrl] = useState<string>('https://myapp.example.com');
-  const [repoUrl, setRepoUrl] = useState<string>('https://github.com/myorg/myapp');
+  const [repoUrl, setRepoUrl] = useState<string>('https://github.com/myorg/myapp'); // Kept for context, though not directly used for cloning
+  const [applicationDescription, setApplicationDescription] = useState<string>('');
+  
   const [isAnalyzing, setIsAnalyzing] = useState<boolean>(false);
   const [userFlows, setUserFlows] = useState<string[]>([]);
   const [selectedFlow, setSelectedFlow] = useState<string | null>(null);
@@ -38,21 +43,38 @@ export default function CypressPilotPage() {
 
   const { toast } = useToast();
 
-  const handleAnalyzeRepo = async () => {
-    if (!appUrl || !repoUrl) {
-      toast({ title: "Missing Information", description: "Please provide both App URL and GitHub Repo URL.", variant: "destructive" });
+  const handleAnalyzeAppStructure = async () => {
+    if (!appUrl || !applicationDescription) {
+      toast({ title: "Missing Information", description: "Please provide App URL and Application Structure Description.", variant: "destructive" });
       return;
     }
     setIsAnalyzing(true);
+    setUserFlows([]);
+    setSelectedFlow(null);
     setTestResult(null);
     setGeneratedTestCode(null);
-    setSelectedFlow(null);
-    // Simulate API call
-    await new Promise(resolve => setTimeout(resolve, 1500));
-    setUserFlows(MOCK_USER_FLOWS);
-    setSelectedFlow(MOCK_USER_FLOWS[0] || null);
+    
+    try {
+      const input: IdentifyUserFlowsInput = {
+        applicationDescription,
+        appUrl,
+      };
+      const output: IdentifyUserFlowsOutput = await identifyUserFlows(input);
+      
+      if (output.identifiedFlows && output.identifiedFlows.length > 0) {
+        setUserFlows(output.identifiedFlows);
+        setSelectedFlow(output.identifiedFlows[0] || null);
+        toast({ title: "Analysis Complete", description: "User flows identified based on your description. Please select a flow and test type." });
+      } else {
+        setUserFlows([]);
+        toast({ title: "No Flows Identified", description: "The AI could not identify user flows from the provided description. Try to be more specific or provide more details.", variant: "default" });
+      }
+    } catch (error) {
+      console.error("Error identifying user flows:", error);
+      setUserFlows([]);
+      toast({ title: "Analysis Failed", description: "Could not identify user flows. Please try again or refine your description.", variant: "destructive" });
+    }
     setIsAnalyzing(false);
-    toast({ title: "Analysis Complete", description: "User flows identified. Please select a flow and test type." });
   };
 
   const handleGenerateTest = async () => {
@@ -67,7 +89,8 @@ export default function CypressPilotPage() {
       const input: GenerateCypressTestInput = {
         flowDescription: selectedFlow,
         testType: selectedTestType,
-        applicationDetails: `App URL: ${appUrl}, GitHub Repo: ${repoUrl}`,
+        // Repo URL is passed for context to the generation prompt
+        applicationDetails: `App URL: ${appUrl}, GitHub Repo: ${repoUrl}. Key application structure: ${applicationDescription.substring(0, 500)}...`,
       };
       const output: GenerateCypressTestOutput = await generateCypressTest(input);
       setGeneratedTestCode(output.testCode);
@@ -87,17 +110,16 @@ export default function CypressPilotPage() {
     setIsRunningTest(true);
     setTestResult({ status: 'pending', logs: 'Starting test execution...\nInitializing Cypress environment...', testCode: generatedTestCode });
     
-    // Simulate test execution
     await new Promise(resolve => setTimeout(resolve, 2500));
     
-    const isSuccess = Math.random() > 0.4; // Simulate success/failure
+    const isSuccess = Math.random() > 0.4;
     if (isSuccess) {
       setTestResult({
         status: 'success',
         logs: `Test execution started for: ${selectedFlow}\n[INFO] Navigating to ${appUrl}...\n[PASS] Page loaded successfully.\n[INFO] Performing actions for ${selectedFlow}...\n[PASS] All steps completed and assertions passed.\n\n✨ Test run finished successfully! ✨`,
         testCode: generatedTestCode,
       });
-      toast({ title: "Test Passed!", description: "The generated Cypress test ran successfully." });
+      toast({ title: "Test Passed!", description: "The Cypress test ran successfully." });
     } else {
       setTestResult({
         status: 'failure',
@@ -119,8 +141,8 @@ export default function CypressPilotPage() {
           <div className="space-y-6 md:space-y-8">
             <Card className="shadow-lg">
               <CardHeader>
-                <CardTitle className="text-2xl">1. Configure Application</CardTitle>
-                <CardDescription>Provide your application details to begin.</CardDescription>
+                <CardTitle className="text-2xl">1. Describe Application</CardTitle>
+                <CardDescription>Provide your application details and structure to identify user flows.</CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="space-y-2">
@@ -128,14 +150,26 @@ export default function CypressPilotPage() {
                   <Input id="appUrl" placeholder="https://myapp.example.com" value={appUrl} onChange={(e) => setAppUrl(e.target.value)} />
                 </div>
                 <div className="space-y-2">
-                  <Label htmlFor="repoUrl" className="flex items-center"><Github className="mr-2 h-4 w-4 text-muted-foreground" />GitHub Repo URL</Label>
+                  <Label htmlFor="repoUrl" className="flex items-center"><Github className="mr-2 h-4 w-4 text-muted-foreground" />GitHub Repo URL (for context)</Label>
                   <Input id="repoUrl" placeholder="https://github.com/myorg/myapp" value={repoUrl} onChange={(e) => setRepoUrl(e.target.value)} />
+                </div>
+                 <div className="space-y-2">
+                  <Label htmlFor="appDescription" className="flex items-center"><FileText className="mr-2 h-4 w-4 text-muted-foreground" />Application Structure / Code Snippets</Label>
+                  <Textarea 
+                    id="appDescription" 
+                    placeholder="Paste relevant details here: e.g., main route definitions, key component names, or snippets from important files like page.tsx or App.tsx..." 
+                    value={applicationDescription} 
+                    onChange={(e) => setApplicationDescription(e.target.value)}
+                    rows={8}
+                    className="max-h-60"
+                  />
+                  <p className="text-xs text-muted-foreground">Provide enough detail for the AI to understand user interaction points.</p>
                 </div>
               </CardContent>
               <CardFooter>
-                <Button onClick={handleAnalyzeRepo} disabled={isAnalyzing} className="w-full bg-primary hover:bg-primary/90 text-primary-foreground">
+                <Button onClick={handleAnalyzeAppStructure} disabled={isAnalyzing || !applicationDescription} className="w-full bg-primary hover:bg-primary/90 text-primary-foreground">
                   {isAnalyzing ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ListTree className="mr-2 h-4 w-4" />}
-                  {isAnalyzing ? 'Analyzing Repository...' : 'Analyze & Identify Flows'}
+                  {isAnalyzing ? 'Analyzing Description...' : 'Identify Flows from Description'}
                 </Button>
               </CardFooter>
             </Card>
@@ -144,7 +178,7 @@ export default function CypressPilotPage() {
               <Card className="shadow-lg">
                 <CardHeader>
                   <CardTitle className="text-2xl">2. Generate Test</CardTitle>
-                  <CardDescription>Select a user flow and test type to generate Cypress code.</CardDescription>
+                  <CardDescription>Select an identified user flow and test type to generate Cypress code.</CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-6">
                   <div className="space-y-2">
@@ -154,8 +188,8 @@ export default function CypressPilotPage() {
                         <SelectValue placeholder="Choose a user flow" />
                       </SelectTrigger>
                       <SelectContent>
-                        {userFlows.map((flow) => (
-                          <SelectItem key={flow} value={flow}>{flow}</SelectItem>
+                        {userFlows.map((flow, index) => (
+                          <SelectItem key={`${flow}-${index}`} value={flow}>{flow}</SelectItem>
                         ))}
                       </SelectContent>
                     </Select>
@@ -181,6 +215,12 @@ export default function CypressPilotPage() {
                   </Button>
                 </CardFooter>
               </Card>
+            )}
+            {isAnalyzing && userFlows.length === 0 && (
+                 <div className="flex flex-col items-center justify-center h-40 border border-dashed rounded-md p-4">
+                    <Loader2 className="h-10 w-10 animate-spin text-primary mb-3" />
+                    <p className="text-muted-foreground text-center">AI is analyzing your application description to identify user flows...</p>
+                </div>
             )}
           </div>
 
@@ -215,7 +255,7 @@ export default function CypressPilotPage() {
                   
                   {(isRunningTest || testResult) && (
                      <div className="mt-6">
-                      <h3 className="font-semibold mb-2 text-lg">Test Execution:</h3>
+                      <h3 className="font-semibold mb-2 text-lg">Test Execution (Simulated):</h3>
                       {testResult?.status === 'pending' && (
                          <div className="flex flex-col items-center justify-center h-40 border border-dashed rounded-md">
                             <Loader2 className="h-10 w-10 animate-spin text-accent mb-3" />
@@ -223,10 +263,10 @@ export default function CypressPilotPage() {
                         </div>
                       )}
                       {testResult && testResult.status !== 'pending' && (
-                        <Alert variant={testResult.status === 'success' ? 'default' : 'destructive'} className={testResult.status === 'success' ? 'bg-green-50 border-green-300' : 'bg-red-50 border-red-300'}>
-                          {testResult.status === 'success' ? <CheckCircle2 className="h-5 w-5 text-green-600" /> : <XCircle className="h-5 w-5 text-red-600" />}
-                          <AlertTitle className={`font-semibold ${testResult.status === 'success' ? 'text-green-700' : 'text-red-700'}`}>
-                            Test {testResult.status === 'success' ? 'Passed' : 'Failed'}
+                        <Alert variant={testResult.status === 'success' ? 'default' : 'destructive'} className={testResult.status === 'success' ? 'bg-green-50 dark:bg-green-900/30 border-green-300 dark:border-green-700' : 'bg-red-50 dark:bg-red-900/30 border-red-300 dark:border-red-700'}>
+                          {testResult.status === 'success' ? <CheckCircle2 className="h-5 w-5 text-green-600 dark:text-green-400" /> : <XCircle className="h-5 w-5 text-red-600 dark:text-red-400" />}
+                          <AlertTitle className={`font-semibold ${testResult.status === 'success' ? 'text-green-700 dark:text-green-300' : 'text-red-700 dark:text-red-300'}`}>
+                            Test {testResult.status === 'success' ? 'Passed' : 'Failed'} (Simulated)
                           </AlertTitle>
                           <AlertDescription className="mt-2">
                             <p className="font-semibold mb-1 text-sm">Logs:</p>
@@ -236,12 +276,12 @@ export default function CypressPilotPage() {
                                 </pre>
                             </ScrollArea>
                             {testResult.suggestions && (
-                              <div className="mt-3 p-3 rounded-md bg-yellow-50 border border-yellow-300">
+                              <div className="mt-3 p-3 rounded-md bg-yellow-50 dark:bg-yellow-900/30 border border-yellow-300 dark:border-yellow-700">
                                 <div className="flex items-start">
-                                  <AlertTriangle className="h-5 w-5 text-yellow-600 mr-2 shrink-0 mt-0.5" />
+                                  <AlertTriangle className="h-5 w-5 text-yellow-600 dark:text-yellow-400 mr-2 shrink-0 mt-0.5" />
                                   <div>
-                                    <p className="font-semibold text-yellow-700 text-sm">Suggestions for Fixing:</p>
-                                    <pre className="text-xs font-mono whitespace-pre-wrap break-all text-yellow-800 mt-1">
+                                    <p className="font-semibold text-yellow-700 dark:text-yellow-300 text-sm">Suggestions for Fixing (Simulated):</p>
+                                    <pre className="text-xs font-mono whitespace-pre-wrap break-all text-yellow-800 dark:text-yellow-200 mt-1">
                                         {testResult.suggestions}
                                     </pre>
                                   </div>
@@ -256,6 +296,30 @@ export default function CypressPilotPage() {
                 </CardContent>
               </Card>
             )}
+             { !isAnalyzing && !isGeneratingTest && !generatedTestCode && userFlows.length === 0 && applicationDescription && (
+                <Card className="shadow-lg">
+                    <CardHeader>
+                        <CardTitle className="text-xl">Next Steps</CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                        <p className="text-muted-foreground">
+                            User flows identified from your description will appear here. If no flows are shown, try providing more detailed information about your application's routes, components, and typical user interactions in the text area above and click "Identify Flows from Description" again.
+                        </p>
+                    </CardContent>
+                </Card>
+            )}
+             { !applicationDescription && !isAnalyzing && !isGeneratingTest && (
+                 <Card className="shadow-lg">
+                    <CardHeader>
+                        <CardTitle className="text-xl">Get Started</CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                        <p className="text-muted-foreground">
+                           Provide your application's URL and a description of its structure or key code snippets in section 1. Then, click "Identify Flows from Description" to use AI to suggest user flows for test generation.
+                        </p>
+                    </CardContent>
+                </Card>
+             )}
           </div>
         </div>
       </main>
