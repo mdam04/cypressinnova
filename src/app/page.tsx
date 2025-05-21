@@ -15,12 +15,11 @@ import { useToast } from "@/hooks/use-toast";
 import type { TestType } from '@/lib/constants';
 import { generateCypressTest, type GenerateCypressTestInput, type GenerateCypressTestOutput } from '@/ai/flows/generate-cypress-test';
 import { identifyUserFlows, type IdentifyUserFlowsInput, type IdentifyUserFlowsOutput } from '@/ai/flows/identify-user-flows-flow';
-// Updated import to use the new flow name
-import { executeCypressRunHeadless, type ExecuteCypressRunHeadlessInput, type ExecuteCypressRunHeadlessOutput } from '@/ai/flows/execute-cypress-open-flow';
+// Updated import to use the new flow name and potentially different function name if changed
+import { executeCypressRunHeadless, type ExecuteCypressRunHeadlessInput, type ExecuteCypressRunHeadlessOutput } from '@/ai/flows/execute-cypress-run-headless-flow';
 import { Github, Link as LinkIcon, ListTree, TestTubeDiagonal, Wand2, Play, Loader2, CheckCircle2, XCircle, AlertTriangle, Terminal } from 'lucide-react';
 
 interface TestRunStatus {
-  // Updated status enum to match the new flow output
   status: 'idle' | 'running' | 'completed_successfully' | 'completed_with_failures' | 'error_running' | 'error_saving_file';
   message: string;
   specPath?: string;
@@ -47,7 +46,7 @@ export default function CypressPilotPage() {
   const [isGeneratingTest, setIsGeneratingTest] = useState<boolean>(false);
   const [generatedTestCode, setGeneratedTestCode] = useState<string | null>(null);
   
-  const [isLaunchingTest, setIsLaunchingTest] = useState<boolean>(false); // Renamed to isRunningTest
+  const [isRunningTest, setIsRunningTest] = useState<boolean>(false);
   const [testRunStatus, setTestRunStatus] = useState<TestRunStatus>({ status: 'idle', message: '' });
 
   const { toast } = useToast();
@@ -121,7 +120,6 @@ export default function CypressPilotPage() {
     setIsGeneratingTest(false);
   };
 
-  // Renamed function to reflect headless execution
   const handleRunTestHeadless = async () => {
     if (!generatedTestCode) {
       toast({ title: "No Test Code", description: "Generate a test before running.", variant: "destructive" });
@@ -136,7 +134,7 @@ export default function CypressPilotPage() {
       return;
     }
 
-    setIsLaunchingTest(true); // Keep this state variable name for now, UI reflects "Running"
+    setIsRunningTest(true);
     const specFileName = sanitizeFlowNameForFilename(selectedFlow);
     setTestRunStatus({ status: 'running', message: `Attempting to run Cypress headlessly for ${specFileName}...`, detailedLog: `Preparing to run Cypress headlessly for ${specFileName} in ${clonedRepoPath}` });
     
@@ -146,7 +144,6 @@ export default function CypressPilotPage() {
         repoPath: clonedRepoPath,
         specFileName: specFileName,
       };
-      // Use the new flow
       const output: ExecuteCypressRunHeadlessOutput = await executeCypressRunHeadless(input);
       
       setTestRunStatus({
@@ -168,13 +165,13 @@ export default function CypressPilotPage() {
     } catch (error: any) {
       console.error("Error running Cypress headlessly:", error);
       setTestRunStatus({
-        status: 'error_running', // Generic error if flow call fails
+        status: 'error_running', 
         message: `Failed to initiate Cypress headless run: ${error.message || 'Unknown error'}`,
         detailedLog: `Error: ${error.message || 'Unknown error'}.\n${error.stack || ''}. Check console for details.`,
       });
       toast({ title: "Run Failed", description: `Could not initiate Cypress headless run: ${error.message || 'Unknown error'}.`, variant: "destructive" });
     }
-    setIsLaunchingTest(false);
+    setIsRunningTest(false);
   };
 
   return (
@@ -273,11 +270,11 @@ export default function CypressPilotPage() {
 
           {/* Right Pane: Test Code & Launch Control */}
           <div className="space-y-6 md:space-y-8">
-            {(generatedTestCode || isGeneratingTest || isLaunchingTest || testRunStatus.status !== 'idle') && (
+            {(generatedTestCode || isGeneratingTest || isRunningTest || testRunStatus.status !== 'idle') && (
               <Card className="shadow-lg">
                 <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
                   <CardTitle className="text-2xl">3. Test Output & Execution</CardTitle>
-                  {generatedTestCode && !isLaunchingTest && (
+                  {generatedTestCode && !isRunningTest && (
                     <Button onClick={handleRunTestHeadless} size="sm" variant="outline" disabled={!clonedRepoPath}>
                       <Terminal className="mr-2 h-4 w-4" /> Run Test (Headless)
                     </Button>
@@ -301,7 +298,7 @@ export default function CypressPilotPage() {
                     </div>
                   )}
                   
-                  {(isLaunchingTest || testRunStatus.status !== 'idle') && (
+                  {(isRunningTest || testRunStatus.status !== 'idle') && (
                      <div className="mt-6">
                       <h3 className="font-semibold mb-2 text-lg">Cypress Run Status:</h3>
                       {testRunStatus.status === 'running' && (
@@ -342,7 +339,7 @@ export default function CypressPilotPage() {
                                     <pre className="text-xs font-mono bg-muted/50 p-2 rounded whitespace-pre-wrap break-all">{testRunStatus.runSummary}</pre>
                                 </div>
                             )}
-                            {testRunStatus.detailedLog && (testRunStatus.status !== 'completed_successfully' || testRunStatus.runSummary) && ( // Show logs for errors/failures or if summary is present
+                            {testRunStatus.detailedLog && (testRunStatus.status !== 'completed_successfully' || testRunStatus.runSummary) && ( 
                                  <ScrollArea className="h-24 max-h-48 rounded-md bg-background/50 p-2 border mt-2">
                                     <pre className="text-xs font-mono whitespace-pre-wrap break-all">
                                     {testRunStatus.detailedLog}
@@ -387,4 +384,3 @@ export default function CypressPilotPage() {
     </div>
   );
 }
-

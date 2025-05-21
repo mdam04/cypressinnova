@@ -12,9 +12,9 @@
 import { ai } from '@/ai/genkit';
 import { z } from 'genkit';
 import * as fs from 'fs';
-import *import type { StdioOptions } from 'child_process';
+import type { StdioOptions } from 'child_process';
 import { spawn } from 'child_process';
-import *path from 'path';
+import * as path from 'path';
 
 const ExecuteCypressRunHeadlessInputSchema = z.object({
   testCode: z.string().describe('The Cypress test code to be saved and executed.'),
@@ -167,28 +167,27 @@ async function executeCypressRunHeadlessLogic(input: ExecuteCypressRunHeadlessIn
   cumulativeLog += attemptResult.log;
 
   if (attemptResult.status === 'ok' || (attemptResult.status === 'error_generic' && attemptResult.output.status !== 'error_running')) {
-     // If successful, or failed generically (but not a startup/xvfb issue for chrome itself), return this result
-    return { ...attemptResult.output, detailedLog: cumulativeLog + "\nFinal Result from Chrome attempt:\n" + attemptResult.output.detailedLog?.substring(0,1000) };
+    return { ...attemptResult.output, detailedLog: (cumulativeLog + "\nFinal Result from Chrome attempt:\n" + (attemptResult.output.detailedLog || "")).substring(0,2500) };
   }
-  // If Chrome attempt had an Xvfb error, or a generic startup error, proceed to Firefox
+  
 
   cumulativeLog += "\n--- Chrome headless attempt encountered issues (likely Xvfb or startup). Attempting with Firefox headless ---\n";
   const firefoxArgs = ['run', '--browser', 'firefox', '--headless', '--spec', relativeSpecPath];
   attemptResult = await tryCypressRunAttempt(firefoxArgs, commonSpawnOptions, specFilePath, relativeSpecPath, 'Firefox');
   cumulativeLog += attemptResult.log;
   
-  // Return Firefox result, prefixing its detailedLog with the cumulative attempts log
   const finalMessage = attemptResult.status === 'ok' ? attemptResult.output.message : `${attemptResult.output.message} (after trying Chrome then Firefox).`;
-  const finalDetailedLog = cumulativeLog + "\nFinal Result from Firefox attempt:\n" + attemptResult.output.detailedLog?.substring(0,1000);
+  const finalDetailedLog = (cumulativeLog + "\nFinal Result from Firefox attempt:\n" + (attemptResult.output.detailedLog || "")).substring(0,2500);
 
-  return { ...attemptResult.output, message: finalMessage, detailedLog: finalDetailedLog.substring(0,1500) };
+  return { ...attemptResult.output, message: finalMessage, detailedLog: finalDetailedLog };
 }
 
 export const executeCypressRunHeadless = ai.defineFlow(
   {
-    name: 'executeCypressRunHeadlessFlow', // Keep flow name consistent if UI calls this specific name
+    name: 'executeCypressRunHeadlessFlow', 
     inputSchema: ExecuteCypressRunHeadlessInputSchema,
     outputSchema: ExecuteCypressRunHeadlessOutputSchema,
   },
   executeCypressRunHeadlessLogic
 );
+
