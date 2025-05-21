@@ -64,10 +64,11 @@ async function executeCypressRunHeadlessLogic(input: ExecuteCypressRunHeadlessIn
   return new Promise((resolve) => {
     let stdoutData = '';
     let stderrData = '';
-    // Changed: Use 'cypress run --spec' for headless execution
+    
     const cypressProcess = spawn('npx', ['cypress', 'run', '--spec', relativeSpecPath], {
       cwd: repoPath,
-      stdio: ['ignore', 'pipe', 'pipe'], // Detached is not typically used for `cypress run` as we want to wait for completion
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, DISPLAY: '' }, // Attempt to force truly headless operation
     });
 
     cypressProcess.stdout?.on('data', (data) => {
@@ -78,7 +79,7 @@ async function executeCypressRunHeadlessLogic(input: ExecuteCypressRunHeadlessIn
       stderrData += data.toString();
     });
 
-    cypressProcess.on('error', (err) => { // Error spawning the process
+    cypressProcess.on('error', (err) => { 
       resolve({
         status: 'error_running',
         message: `Failed to start Cypress headless run: ${err.message}.`,
@@ -87,14 +88,15 @@ async function executeCypressRunHeadlessLogic(input: ExecuteCypressRunHeadlessIn
       });
     });
 
-    cypressProcess.on('close', (code) => { // Process exited
+    cypressProcess.on('close', (code) => { 
       const fullLog = `Exit Code: ${code}\n\nStdout:\n${stdoutData}\n\nStderr:\n${stderrData}`;
       
-      if (stderrData.toLowerCase().includes('xvfb')) {
-        resolve({
+      // Explicitly check for Xvfb error in stderr, as this is a recurring issue.
+      if (stderrData.toLowerCase().includes('xvfb') && stderrData.toLowerCase().includes('missing the dependency')) {
+         resolve({
            status: 'error_running',
-           message: `Cypress Headless Run Failed: Xvfb dependency still reported. This is unexpected for headless mode.`,
-           detailedLog: `Xvfb error detected in stderr during headless run. This usually indicates a misconfiguration or an unusual Cypress setup problem.\n${fullLog.substring(0,1500)}`,
+           message: `Cypress Headless Run Failed: Xvfb dependency still reported even with DISPLAY=''. This suggests a deep-seated issue with Cypress/Electron on your system or an incorrect Cypress configuration.`,
+           detailedLog: `Xvfb error detected in stderr during headless run attempt with DISPLAY=''.\n${fullLog.substring(0,1500)}`, // Truncate log for brevity
            specPath: specFilePath,
        });
        return;
@@ -108,9 +110,8 @@ async function executeCypressRunHeadlessLogic(input: ExecuteCypressRunHeadlessIn
           runSummary: stdoutData.substring(stdoutData.lastIndexOf('Run Summary'), stdoutData.lastIndexOf('Done running') !== -1 ? stdoutData.lastIndexOf('Done running') : undefined ) || 'Tests passed.',
           detailedLog: fullLog.substring(0,1500),
         });
-      } else if (code !== 0 || stdoutData.match(/\(\d+ failing\)/) || stderrData.trim() !== '') {
-         // Prioritize stderr for failure messages if present
-        const failureMessage = stderrData.trim() !== '' ? 
+      } else if (code !== 0 || stdoutData.match(/\(\d+ failing\)/) || (stderrData.trim() !== '' && !stderrData.toLowerCase().includes('xvfb'))) { 
+        const failureMessage = stderrData.trim() !== '' && !stderrData.toLowerCase().includes('xvfb') ? 
             `Cypress headless run for spec: ${relativeSpecPath} likely failed. Check logs.` :
             `Cypress headless run for spec: ${relativeSpecPath} completed with failures or errors. Exit code: ${code}.`;
         resolve({
@@ -120,7 +121,7 @@ async function executeCypressRunHeadlessLogic(input: ExecuteCypressRunHeadlessIn
           runSummary: stdoutData.substring(stdoutData.lastIndexOf('Run Summary'), stdoutData.lastIndexOf('Done running') !== -1 ? stdoutData.lastIndexOf('Done running') : undefined ) || 'Tests completed with failures/errors.',
           detailedLog: fullLog.substring(0,1500),
         });
-      } else { // Should not happen if code is 0, but as a fallback
+      } else { 
         resolve({
             status: 'error_running',
             message: `Cypress headless run for spec: ${relativeSpecPath} finished with an unknown status. Exit code: ${code}.`,
@@ -132,10 +133,9 @@ async function executeCypressRunHeadlessLogic(input: ExecuteCypressRunHeadlessIn
   });
 }
 
-// Renaming the exported flow and the variable for clarity
 export const executeCypressRunHeadless = ai.defineFlow(
   {
-    name: 'executeCypressRunHeadlessFlow', // Changed name
+    name: 'executeCypressRunHeadlessFlow',
     inputSchema: ExecuteCypressRunHeadlessInputSchema,
     outputSchema: ExecuteCypressRunHeadlessOutputSchema,
   },
