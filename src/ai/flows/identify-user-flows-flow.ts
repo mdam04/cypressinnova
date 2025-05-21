@@ -24,6 +24,7 @@ export type IdentifyUserFlowsInput = z.infer<typeof IdentifyUserFlowsInputSchema
 const IdentifyUserFlowsOutputSchema = z.object({
   identifiedFlows: z.array(z.string()).describe('A list of identified potential user flows based on the repository analysis.'),
   analysisLog: z.string().optional().describe('Log of the analysis process, for debugging or info.'),
+  clonedRepoPath: z.string().optional().describe('The local path where the repository was cloned.'),
 });
 export type IdentifyUserFlowsOutput = z.infer<typeof IdentifyUserFlowsOutputSchema>;
 
@@ -91,7 +92,10 @@ const readRepositoryStructureTool = ai.defineTool(
             const packageJson = JSON.parse(packageJsonContent);
             structure += `Package name: ${packageJson.name || 'N/A'}\n`;
             if (packageJson.dependencies) {
-                structure += "Key dependencies: " + Object.keys(packageJson.dependencies).filter(k => ['next', 'react', 'vue', 'angular', '@sveltejs/kit'].includes(k)).join(', ') + "\n";
+                structure += "Key dependencies: " + Object.keys(packageJson.dependencies).filter(k => ['next', 'react', 'vue', 'angular', '@sveltejs/kit', 'cypress'].includes(k)).join(', ') + "\n";
+            }
+             if (packageJson.devDependencies) {
+                structure += "Key devDependencies: " + Object.keys(packageJson.devDependencies).filter(k => ['cypress'].includes(k)).join(', ') + "\n";
             }
         } catch (e: any) {
             structure += `Could not parse package.json: ${e.message}\n`;
@@ -101,9 +105,9 @@ const readRepositoryStructureTool = ai.defineTool(
         structure += "No package.json found at root.\n";
       }
 
-      const commonDirs = ['src/app', 'app', 'src/pages', 'pages', 'src/components', 'components', 'src/routes', 'routes'];
+      const commonDirs = ['src/app', 'app', 'src/pages', 'pages', 'src/components', 'components', 'src/routes', 'routes', 'cypress/e2e', 'cypress/integration'];
       let filesFound = 0;
-      const maxFilesToList = 30; // Limit the number of files listed to keep the summary concise
+      const maxFilesToList = 30; 
 
       for (const dir of commonDirs) {
         const fullDirPath = path.join(repoPath, dir);
@@ -120,7 +124,7 @@ const readRepositoryStructureTool = ai.defineTool(
         }
       }
        if (filesFound === 0) {
-        structure += "\nNo common framework directories (src/app, src/pages, etc.) found. Listing root items:\n";
+        structure += "\nNo common framework or test directories found. Listing root items:\n";
         const rootItems = fs.readdirSync(repoPath, { withFileTypes: true });
         rootItems.slice(0, maxFilesToList).forEach(item => {
             structure += `  - ${item.name}${item.isDirectory() ? '/' : ''}\n`;
@@ -145,8 +149,7 @@ const IdentifyUserFlowsPromptInputSchema = IdentifyUserFlowsInputSchema.extend({
 const prompt = ai.definePrompt({
   name: 'identifyUserFlowsPrompt',
   input: {schema: IdentifyUserFlowsPromptInputSchema},
-  output: {schema: IdentifyUserFlowsOutputSchema.omit({analysisLog: true})}, // LLM only returns flows
-  tools: [cloneRepositoryTool, readRepositoryStructureTool], // Though not directly used by prompt, makes them available conceptually
+  output: {schema: IdentifyUserFlowsOutputSchema.omit({analysisLog: true, clonedRepoPath: true})}, // LLM only returns flows
   prompt: `You are an expert software analyst. Based on the provided repository structure analysis and optionally the application URL, identify and list potential user flows.
   Focus on sequences of actions a user might take.
 
@@ -165,13 +168,14 @@ const prompt = ai.definePrompt({
   `,
 });
 
-export async function identifyUserFlows(input: IdentifyUserFlowsInput): Promise<IdentifyUserFlowsOutput> {
+// This function contains the core logic for the flow
+async function internalIdentifyUserFlowsLogic(input: IdentifyUserFlowsInput): Promise<IdentifyUserFlowsOutput> {
   let tempRepoPath: string | undefined;
   let fullAnalysisLog = "";
 
   try {
     const cloneResult = await cloneRepositoryTool(input);
-    tempRepoPath = cloneResult.tempPath;
+    tempRepoPath = cloneResult.tempPath; // Store for returning
     fullAnalysisLog += cloneResult.log;
 
     const structureResult = await readRepositoryStructureTool({ repoPath: tempRepoPath });
@@ -184,16 +188,19 @@ export async function identifyUserFlows(input: IdentifyUserFlowsInput): Promise<
 
     const {output} = await prompt(promptInput);
     
-    if (tempRepoPath && fs.existsSync(tempRepoPath)) {
-      fs.rmSync(tempRepoPath, { recursive: true, force: true });
-      fullAnalysisLog += `Successfully cleaned up temporary directory: ${tempRepoPath}\n`;
-    }
+    // On success, DO NOT clean up tempRepoPath. It will be returned.
+    // Cleanup will only happen if an error occurs within this flow.
     
     if (!output) {
-      return { identifiedFlows: [], analysisLog: fullAnalysisLog + "LLM returned no output." };
+      // If LLM fails, still cleanup tempRepoPath as it's not useful.
+      if (tempRepoPath && fs.existsSync(tempRepoPath)) {
+        fs.rmSync(tempRepoPath, { recursive: true, force: true });
+        fullAnalysisLog += `Cleaned up temporary directory due to LLM returning no output: ${tempRepoPath}\n`;
+        tempRepoPath = undefined; // Clear the path
+      }
+      return { identifiedFlows: [], analysisLog: fullAnalysisLog + "LLM returned no output.", clonedRepoPath: tempRepoPath };
     }
 
-    // Ensure identifiedFlows is always an array
     let flows = output.identifiedFlows;
     if (flows && !Array.isArray(flows)) {
         fullAnalysisLog += "Warning: LLM returned non-array for identifiedFlows, attempting to adapt.\n";
@@ -206,69 +213,28 @@ export async function identifyUserFlows(input: IdentifyUserFlowsInput): Promise<
         flows = [];
     }
     
-    return { identifiedFlows: flows, analysisLog: fullAnalysisLog };
+    return { identifiedFlows: flows, analysisLog: fullAnalysisLog, clonedRepoPath: tempRepoPath };
 
   } catch (error: any) {
     fullAnalysisLog += `Error in identifyUserFlows flow: ${error.message || error.toString()}\n`;
+    // Clean up temp directory if an error occurred anywhere in the try block
     if (tempRepoPath && fs.existsSync(tempRepoPath)) {
       fs.rmSync(tempRepoPath, { recursive: true, force: true });
       fullAnalysisLog += `Cleaned up temporary directory due to error: ${tempRepoPath}\n`;
     }
-    // Re-throw as a more user-friendly error, or handle as appropriate
     console.error("Identify User Flows Error:", fullAnalysisLog, error);
-    throw new Error(`Failed to identify user flows. Details: ${error.message}. Check server logs for more info.`);
+    throw new Error(`Failed to identify user flows. Details: ${error.message}. Log: ${fullAnalysisLog}`);
   }
 }
-
-const identifyUserFlowsFlow = ai.defineFlow(
-  {
-    name: 'identifyUserFlowsFlow', //This is the registered flow name. The exported function is just a wrapper.
-    inputSchema: IdentifyUserFlowsInputSchema,
-    outputSchema: IdentifyUserFlowsOutputSchema,
-    tools: [cloneRepositoryTool, readRepositoryStructureTool],
-  },
-  identifyUserFlows // Use the refactored function
-);
-
-// Note: The exported function `identifyUserFlows` is what components call.
-// The `identifyUserFlowsFlow` is what's registered with Genkit and technically executed by it.
-// We keep `identifyUserFlows` as the direct async function for clarity and easier local logic before/after LLM.
-// However, Genkit's standard pattern is to directly pass the async function to defineFlow.
-// For this case, we will call the registered flow, but the main logic is in the `identifyUserFlows` async function.
-// To align better, we'll make the exported function call the registered flow.
-
-export async function identifyUserFlowsWrapper(input: IdentifyUserFlowsInput): Promise<IdentifyUserFlowsOutput> {
-  // This wrapper now calls the Genkit-defined flow
-  // This is more aligned with how Genkit tools and flows are typically invoked.
-  // The actual implementation has been moved into the function passed to ai.defineFlow.
-  return identifyUserFlowsFlow(input);
-}
-// The previous `identifyUserFlows` function is now the main implementation for the flow.
-// The exported function should just be `identifyUserFlows` which is the one registered with Genkit.
-// The component will call `identifyUserFlows(input)` from the import, which refers to the flow function.
-// Let's rename the wrapper to avoid confusion.
-// The final structure:
-// - `identifyUserFlows` (async function containing the logic, passed to defineFlow)
-// - `identifyUserFlowsFlow` (the Genkit registered flow, which is `identifyUserFlows`)
-// - The exported function called by the UI will be `identifyUserFlows` (the flow itself)
-
-// Correcting the export structure:
-// The actual `identifyUserFlows` async function is the core logic.
-// `ai.defineFlow` wraps this logic. The result of `ai.defineFlow` is the callable flow.
-
-// So the page.tsx should import and call the result of ai.defineFlow.
-// Let's rename the flow to avoid conflict and export the defined flow.
-
-const internalIdentifyUserFlowsLogic = identifyUserFlows; // Keep the logic separate for clarity
 
 const actualRegisteredFlow = ai.defineFlow(
   {
     name: 'identifyUserFlowsFlow',
     inputSchema: IdentifyUserFlowsInputSchema,
     outputSchema: IdentifyUserFlowsOutputSchema,
-    tools: [cloneRepositoryTool, readRepositoryStructureTool],
+    tools: [cloneRepositoryTool, readRepositoryStructureTool], // Tools are available to the flow execution
   },
-  internalIdentifyUserFlowsLogic
+  internalIdentifyUserFlowsLogic // Pass the function containing the logic
 );
 
 // Export the registered flow for components to call

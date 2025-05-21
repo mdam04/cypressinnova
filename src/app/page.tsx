@@ -11,27 +11,33 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-// Removed Textarea import as it's no longer used for app description
 import { useToast } from "@/hooks/use-toast";
 import type { TestType } from '@/lib/constants';
 import { generateCypressTest, type GenerateCypressTestInput, type GenerateCypressTestOutput } from '@/ai/flows/generate-cypress-test';
-import { identifyUserFlows, type IdentifyUserFlowsInput, type IdentifyUserFlowsOutput } from '@/ai/flows/identify-user-flows-flow'; // identifyUserFlows is now the Genkit flow
-import { Github, Link as LinkIcon, ListTree, TestTubeDiagonal, Wand2, Play, Loader2, CheckCircle2, XCircle, AlertTriangle, FileText, GitFork } from 'lucide-react';
+import { identifyUserFlows, type IdentifyUserFlowsInput, type IdentifyUserFlowsOutput } from '@/ai/flows/identify-user-flows-flow';
+import { executeCypressOpen, type ExecuteCypressOpenInput, type ExecuteCypressOpenOutput } from '@/ai/flows/execute-cypress-open-flow';
+import { Github, Link as LinkIcon, ListTree, TestTubeDiagonal, Wand2, Play, Loader2, CheckCircle2, XCircle, AlertTriangle, ExternalLink } from 'lucide-react';
 
-interface TestResult {
-  status: 'success' | 'failure' | 'pending';
-  logs: string;
-  suggestions?: string;
-  testCode?: string;
+interface TestRunStatus {
+  status: 'idle' | 'launching' | 'launched' | 'error' | 'already-running';
+  message: string;
+  specPath?: string;
+  logs?: string; // For initial messages or errors from the launch attempt
 }
+
+// Helper to sanitize flow names for filenames
+const sanitizeFlowNameForFilename = (flowName: string): string => {
+  return flowName.toLowerCase().replace(/[^a-z0-9_.-]+/g, '-').replace(/-+/g, '-') + '.cy.ts';
+};
+
 
 export default function CypressPilotPage() {
   const [appUrl, setAppUrl] = useState<string>('https://myapp.example.com');
   const [repoUrl, setRepoUrl] = useState<string>('https://github.com/myorg/myapp');
-  // applicationDescription state is removed
   
   const [isAnalyzing, setIsAnalyzing] = useState<boolean>(false);
   const [analysisLog, setAnalysisLog] = useState<string | null>(null);
+  const [clonedRepoPath, setClonedRepoPath] = useState<string | null>(null);
   const [userFlows, setUserFlows] = useState<string[]>([]);
   const [selectedFlow, setSelectedFlow] = useState<string | null>(null);
   const [selectedTestType, setSelectedTestType] = useState<TestType | null>(null);
@@ -39,46 +45,52 @@ export default function CypressPilotPage() {
   const [isGeneratingTest, setIsGeneratingTest] = useState<boolean>(false);
   const [generatedTestCode, setGeneratedTestCode] = useState<string | null>(null);
   
-  const [isRunningTest, setIsRunningTest] = useState<boolean>(false);
-  const [testResult, setTestResult] = useState<TestResult | null>(null);
+  const [isLaunchingTest, setIsLaunchingTest] = useState<boolean>(false);
+  const [testRunStatus, setTestRunStatus] = useState<TestRunStatus>({ status: 'idle', message: '' });
 
   const { toast } = useToast();
 
   const handleAnalyzeRepo = async () => {
-    if (!repoUrl) { // Only repoUrl is mandatory for analysis now
+    if (!repoUrl) {
       toast({ title: "Missing Repository URL", description: "Please provide the GitHub Repository URL.", variant: "destructive" });
       return;
     }
     setIsAnalyzing(true);
     setUserFlows([]);
     setSelectedFlow(null);
-    setTestResult(null);
     setGeneratedTestCode(null);
-    setAnalysisLog("Starting repository analysis...\n");
+    setClonedRepoPath(null);
+    setTestRunStatus({ status: 'idle', message: '' });
+    setAnalysisLog("Starting repository analysis...\nThis may take a moment depending on repository size.\n");
     
     try {
       const input: IdentifyUserFlowsInput = {
         repoUrl,
-        appUrl: appUrl || undefined, // appUrl is optional for analysis
+        appUrl: appUrl || undefined,
       };
-      // Call the Genkit flow directly
       const output: IdentifyUserFlowsOutput = await identifyUserFlows(input);
       
-      setAnalysisLog(prev => prev + (output.analysisLog || "Analysis complete.\n"));
+      setAnalysisLog(prev => prev + (output.analysisLog || "Analysis process completed.\n"));
+      setClonedRepoPath(output.clonedRepoPath || null);
+
+      if (output.clonedRepoPath) {
+         setAnalysisLog(prev => prev + `Repository cloned to: ${output.clonedRepoPath}\n`);
+      }
 
       if (output.identifiedFlows && output.identifiedFlows.length > 0) {
         setUserFlows(output.identifiedFlows);
         setSelectedFlow(output.identifiedFlows[0] || null);
-        toast({ title: "Analysis Complete", description: "User flows identified from the repository. Please select a flow and test type." });
+        toast({ title: "Analysis Complete", description: "User flows identified. Please select a flow and test type." });
       } else {
         setUserFlows([]);
-        toast({ title: "No Flows Identified", description: "The AI could not identify user flows from the repository analysis. The repository might be empty, structured unusually, or the analysis tool might need refinement.", variant: "default" });
+        toast({ title: "No Flows Identified", description: "The AI could not identify user flows. Check the analysis log.", variant: "default" });
       }
     } catch (error: any) {
       console.error("Error identifying user flows from repo:", error);
       setUserFlows([]);
+      setClonedRepoPath(null);
       setAnalysisLog(prev => prev + `Error during analysis: ${error.message}\n`);
-      toast({ title: "Analysis Failed", description: `Could not identify user flows: ${error.message || 'Unknown error'}. Check console for details.`, variant: "destructive" });
+      toast({ title: "Analysis Failed", description: `Could not identify user flows: ${error.message || 'Unknown error'}. Check console and analysis log.`, variant: "destructive" });
     }
     setIsAnalyzing(false);
   };
@@ -90,13 +102,12 @@ export default function CypressPilotPage() {
     }
     setIsGeneratingTest(true);
     setGeneratedTestCode(null);
-    setTestResult(null);
+    setTestRunStatus({ status: 'idle', message: '' });
     try {
       const input: GenerateCypressTestInput = {
         flowDescription: selectedFlow,
         testType: selectedTestType,
-        // Removed applicationDescription. LLM can infer from flow & URLs.
-        applicationDetails: `App URL: ${appUrl}, GitHub Repo: ${repoUrl}`, 
+        applicationDetails: `App URL: ${appUrl || 'N/A'}, GitHub Repo: ${repoUrl}`, 
       };
       const output: GenerateCypressTestOutput = await generateCypressTest(input);
       setGeneratedTestCode(output.testCode);
@@ -113,29 +124,52 @@ export default function CypressPilotPage() {
       toast({ title: "No Test Code", description: "Generate a test before running.", variant: "destructive" });
       return;
     }
-    setIsRunningTest(true);
-    setTestResult({ status: 'pending', logs: 'Starting test execution...\nInitializing Cypress environment...', testCode: generatedTestCode });
-    
-    await new Promise(resolve => setTimeout(resolve, 2500));
-    
-    const isSuccess = Math.random() > 0.4;
-    if (isSuccess) {
-      setTestResult({
-        status: 'success',
-        logs: `Test execution started for: ${selectedFlow}\n[INFO] Navigating to ${appUrl}...\n[PASS] Page loaded successfully.\n[INFO] Performing actions for ${selectedFlow}...\n[PASS] All steps completed and assertions passed.\n\n✨ Test run finished successfully! ✨`,
-        testCode: generatedTestCode,
-      });
-      toast({ title: "Test Passed!", description: "The Cypress test ran successfully." });
-    } else {
-      setTestResult({
-        status: 'failure',
-        logs: `Test execution started for: ${selectedFlow}\n[INFO] Navigating to ${appUrl}...\n[FAIL] Error: Timed out retrying: Expected to find element: \`#login-button\`, but never found it.\n[INFO] Attempting to find element: \`#username-input\`\n[PASS] Element \`#username-input\` found.\n\n❌ Test run failed. ❌`,
-        suggestions: "The test failed likely due to a missing or incorrect selector for `#login-button`. \n1. Verify the selector is correct in your application's current version. \n2. Ensure the element is visible and interactable when the test attempts to find it. \n3. Check for typos in the selector in the generated test code.",
-        testCode: generatedTestCode,
-      });
-      toast({ title: "Test Failed", description: "The Cypress test encountered errors.", variant: "destructive" });
+    if (!clonedRepoPath) {
+      toast({ title: "Repository Not Analyzed", description: "Please analyze a repository first. The test will run in the context of the cloned repository.", variant: "destructive" });
+      return;
     }
-    setIsRunningTest(false);
+    if (!selectedFlow) {
+      toast({ title: "No Flow Selected", description: "A user flow must be selected to name the test file.", variant: "destructive" });
+      return;
+    }
+
+    setIsLaunchingTest(true);
+    const specFileName = sanitizeFlowNameForFilename(selectedFlow);
+    setTestRunStatus({ status: 'launching', message: `Attempting to launch Cypress for ${specFileName}...`, logs: `Preparing to launch Cypress for ${specFileName} in ${clonedRepoPath}` });
+    
+    try {
+      const input: ExecuteCypressOpenInput = {
+        testCode: generatedTestCode,
+        repoPath: clonedRepoPath,
+        specFileName: specFileName,
+      };
+      const output: ExecuteCypressOpenOutput = await executeCypressOpen(input);
+      
+      setTestRunStatus({
+        status: output.status,
+        message: output.message,
+        specPath: output.specPath,
+        logs: output.message, // Use the message from the flow as primary log here
+      });
+
+      if (output.status === 'launched') {
+        toast({ title: "Cypress Launched", description: `Check the Cypress Test Runner window for ${specFileName}.` });
+      } else if (output.status === 'already-running') {
+        toast({ title: "Cypress Already Running", description: output.message, variant: "default" });
+      } else {
+        toast({ title: "Cypress Launch Error", description: output.message, variant: "destructive" });
+      }
+
+    } catch (error: any) {
+      console.error("Error launching Cypress:", error);
+      setTestRunStatus({
+        status: 'error',
+        message: `Failed to launch Cypress: ${error.message || 'Unknown error'}`,
+        logs: `Error: ${error.message || 'Unknown error'}. Check console for details.`,
+      });
+      toast({ title: "Launch Failed", description: `Could not launch Cypress: ${error.message || 'Unknown error'}.`, variant: "destructive" });
+    }
+    setIsLaunchingTest(false);
   };
 
   return (
@@ -148,23 +182,22 @@ export default function CypressPilotPage() {
             <Card className="shadow-lg">
               <CardHeader>
                 <CardTitle className="text-2xl">1. Configure Application</CardTitle>
-                <CardDescription>Provide your application and repository details.</CardDescription>
+                <CardDescription>Provide your application and repository details. The repository will be cloned locally.</CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="space-y-2">
-                  <Label htmlFor="appUrl" className="flex items-center"><LinkIcon className="mr-2 h-4 w-4 text-muted-foreground" />App URL (Optional for analysis, required for test)</Label>
+                  <Label htmlFor="appUrl" className="flex items-center"><LinkIcon className="mr-2 h-4 w-4 text-muted-foreground" />App URL (Optional, for context)</Label>
                   <Input id="appUrl" placeholder="https://myapp.example.com" value={appUrl} onChange={(e) => setAppUrl(e.target.value)} />
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="repoUrl" className="flex items-center"><Github className="mr-2 h-4 w-4 text-muted-foreground" />GitHub Repo URL (Public)</Label>
                   <Input id="repoUrl" placeholder="https://github.com/myorg/myapp" value={repoUrl} onChange={(e) => setRepoUrl(e.target.value)} />
-                   <p className="text-xs text-muted-foreground">The application will attempt to clone and analyze this public repository.</p>
+                   <p className="text-xs text-muted-foreground">The application will clone this public repository to a temporary local directory.</p>
                 </div>
-                {/* Textarea for appDescription removed */}
               </CardContent>
               <CardFooter>
                 <Button onClick={handleAnalyzeRepo} disabled={isAnalyzing || !repoUrl} className="w-full bg-primary hover:bg-primary/90 text-primary-foreground">
-                  {isAnalyzing ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <GitFork className="mr-2 h-4 w-4" />}
+                  {isAnalyzing ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ListTree className="mr-2 h-4 w-4" />}
                   {isAnalyzing ? 'Analyzing Repository...' : 'Analyze Repository & Identify Flows'}
                 </Button>
               </CardFooter>
@@ -183,12 +216,11 @@ export default function CypressPilotPage() {
               </Card>
             )}
 
-
             {userFlows.length > 0 && (
               <Card className="shadow-lg">
                 <CardHeader>
                   <CardTitle className="text-2xl">2. Generate Test</CardTitle>
-                  <CardDescription>Select an identified user flow and test type to generate Cypress code.</CardDescription>
+                  <CardDescription>Select a user flow and test type to generate Cypress code.</CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-6">
                   <div className="space-y-2">
@@ -226,7 +258,7 @@ export default function CypressPilotPage() {
                 </CardFooter>
               </Card>
             )}
-            {isAnalyzing && userFlows.length === 0 && !analysisLog && ( // Show this only if analysis log hasn't started
+            {isAnalyzing && userFlows.length === 0 && !analysisLog?.includes("cloned to:") && (
                  <div className="flex flex-col items-center justify-center h-40 border border-dashed rounded-md p-4">
                     <Loader2 className="h-10 w-10 animate-spin text-primary mb-3" />
                     <p className="text-muted-foreground text-center">Preparing to analyze repository...</p>
@@ -234,15 +266,15 @@ export default function CypressPilotPage() {
             )}
           </div>
 
-          {/* Right Pane: Test Code & Results */}
+          {/* Right Pane: Test Code & Launch Control */}
           <div className="space-y-6 md:space-y-8">
-            {(generatedTestCode || isGeneratingTest || isRunningTest || testResult) && (
+            {(generatedTestCode || isGeneratingTest || isLaunchingTest || testRunStatus.status !== 'idle') && (
               <Card className="shadow-lg">
                 <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                  <CardTitle className="text-2xl">3. Test Output</CardTitle>
-                  {generatedTestCode && !isRunningTest && testResult?.status !== 'pending' &&(
-                    <Button onClick={handleRunTest} size="sm" variant="outline">
-                      <Play className="mr-2 h-4 w-4" /> Run Test
+                  <CardTitle className="text-2xl">3. Test Output & Execution</CardTitle>
+                  {generatedTestCode && !isLaunchingTest && (
+                    <Button onClick={handleRunTest} size="sm" variant="outline" disabled={!clonedRepoPath}>
+                      <Play className="mr-2 h-4 w-4" /> Run Test with Cypress
                     </Button>
                   )}
                 </CardHeader>
@@ -260,43 +292,50 @@ export default function CypressPilotPage() {
                       <ScrollArea className="h-72 w-full rounded-md border bg-muted/30 p-4">
                         <pre className="text-sm font-mono whitespace-pre-wrap break-all"><code>{generatedTestCode}</code></pre>
                       </ScrollArea>
+                      {!clonedRepoPath && <p className="text-sm text-destructive mt-2">Note: Repository analysis with cloning must be successful to enable test execution.</p>}
                     </div>
                   )}
                   
-                  {(isRunningTest || testResult) && (
+                  {(isLaunchingTest || testRunStatus.status !== 'idle') && (
                      <div className="mt-6">
-                      <h3 className="font-semibold mb-2 text-lg">Test Execution (Simulated):</h3>
-                      {testResult?.status === 'pending' && (
+                      <h3 className="font-semibold mb-2 text-lg">Cypress Launch Status:</h3>
+                      {testRunStatus.status === 'launching' && (
                          <div className="flex flex-col items-center justify-center h-40 border border-dashed rounded-md">
                             <Loader2 className="h-10 w-10 animate-spin text-accent mb-3" />
-                            <p className="text-muted-foreground">Running test...</p>
+                            <p className="text-muted-foreground">Launching Cypress...</p>
                         </div>
                       )}
-                      {testResult && testResult.status !== 'pending' && (
-                        <Alert variant={testResult.status === 'success' ? 'default' : 'destructive'} className={testResult.status === 'success' ? 'bg-green-50 dark:bg-green-900/30 border-green-300 dark:border-green-700' : 'bg-red-50 dark:bg-red-900/30 border-red-300 dark:border-red-700'}>
-                          {testResult.status === 'success' ? <CheckCircle2 className="h-5 w-5 text-green-600 dark:text-green-400" /> : <XCircle className="h-5 w-5 text-red-600 dark:text-red-400" />}
-                          <AlertTitle className={`font-semibold ${testResult.status === 'success' ? 'text-green-700 dark:text-green-300' : 'text-red-700 dark:text-red-300'}`}>
-                            Test {testResult.status === 'success' ? 'Passed' : 'Failed'} (Simulated)
+                      {testRunStatus.status !== 'launching' && testRunStatus.status !== 'idle' && (
+                        <Alert 
+                            variant={testRunStatus.status === 'error' ? 'destructive' : 'default'}
+                            className={
+                                testRunStatus.status === 'launched' ? 'bg-green-50 dark:bg-green-900/30 border-green-300 dark:border-green-700' 
+                                : testRunStatus.status === 'already-running' ? 'bg-blue-50 dark:bg-blue-900/30 border-blue-300 dark:border-blue-700'
+                                : 'bg-red-50 dark:bg-red-900/30 border-red-300 dark:border-red-700' 
+                            }
+                        >
+                          {testRunStatus.status === 'launched' && <CheckCircle2 className="h-5 w-5 text-green-600 dark:text-green-400" />}
+                          {testRunStatus.status === 'already-running' && <ExternalLink className="h-5 w-5 text-blue-600 dark:text-blue-400" />}
+                          {testRunStatus.status === 'error' && <XCircle className="h-5 w-5 text-red-600 dark:text-red-400" />}
+                          
+                          <AlertTitle className={`font-semibold ${
+                            testRunStatus.status === 'launched' ? 'text-green-700 dark:text-green-300'
+                            : testRunStatus.status === 'already-running' ? 'text-blue-700 dark:text-blue-300'
+                            : 'text-red-700 dark:text-red-300'
+                          }`}>
+                            {testRunStatus.status === 'launched' ? 'Cypress Launched' : 
+                             testRunStatus.status === 'already-running' ? 'Cypress Likely Already Running' :
+                             'Cypress Launch Error'}
                           </AlertTitle>
-                          <AlertDescription className="mt-2">
-                            <p className="font-semibold mb-1 text-sm">Logs:</p>
-                            <ScrollArea className="h-32 max-h-40 rounded-md bg-background/50 p-2 border">
-                                <pre className="text-xs font-mono whitespace-pre-wrap break-all">
-                                {testResult.logs}
-                                </pre>
-                            </ScrollArea>
-                            {testResult.suggestions && (
-                              <div className="mt-3 p-3 rounded-md bg-yellow-50 dark:bg-yellow-900/30 border border-yellow-300 dark:border-yellow-700">
-                                <div className="flex items-start">
-                                  <AlertTriangle className="h-5 w-5 text-yellow-600 dark:text-yellow-400 mr-2 shrink-0 mt-0.5" />
-                                  <div>
-                                    <p className="font-semibold text-yellow-700 dark:text-yellow-300 text-sm">Suggestions for Fixing (Simulated):</p>
-                                    <pre className="text-xs font-mono whitespace-pre-wrap break-all text-yellow-800 dark:text-yellow-200 mt-1">
-                                        {testResult.suggestions}
+                          <AlertDescription className="mt-2 text-sm">
+                            <p>{testRunStatus.message}</p>
+                            {testRunStatus.specPath && <p className="mt-1">Spec file: <code className="font-mono text-xs bg-muted p-1 rounded">{testRunStatus.specPath}</code></p>}
+                             {testRunStatus.logs && testRunStatus.status === 'error' && (
+                                 <ScrollArea className="h-24 max-h-32 rounded-md bg-background/50 p-2 border mt-2">
+                                    <pre className="text-xs font-mono whitespace-pre-wrap break-all">
+                                    {testRunStatus.logs}
                                     </pre>
-                                  </div>
-                                </div>
-                              </div>
+                                </ScrollArea>
                             )}
                           </AlertDescription>
                         </Alert>
@@ -306,14 +345,14 @@ export default function CypressPilotPage() {
                 </CardContent>
               </Card>
             )}
-             { !isAnalyzing && !isGeneratingTest && !generatedTestCode && userFlows.length === 0 && repoUrl && (
+             { !isAnalyzing && !isGeneratingTest && !generatedTestCode && userFlows.length === 0 && repoUrl && !clonedRepoPath && (
                 <Card className="shadow-lg">
                     <CardHeader>
                         <CardTitle className="text-xl">Next Steps</CardTitle>
                     </CardHeader>
                     <CardContent>
                         <p className="text-muted-foreground">
-                            If no flows were identified after analysis, the repository might be structured in an unexpected way, it could be empty, or the AI might need more specific guidance (which could be a future enhancement). Try a different public repository or check the analysis log for details.
+                            Click "Analyze Repository & Identify Flows". If analysis fails or no flows are found, check the log. The repository will be cloned to a temporary local directory.
                         </p>
                     </CardContent>
                 </Card>
@@ -325,7 +364,7 @@ export default function CypressPilotPage() {
                     </CardHeader>
                     <CardContent>
                         <p className="text-muted-foreground">
-                           Provide a public GitHub repository URL in section 1. Then, click "Analyze Repository & Identify Flows" to use AI to clone, analyze its structure, and suggest user flows for test generation.
+                           Provide a public GitHub repository URL in section 1. The app will clone it, analyze its structure, and suggest user flows for test generation. Then, it can attempt to run the generated test using your local Cypress installation.
                         </p>
                     </CardContent>
                 </Card>
@@ -336,3 +375,4 @@ export default function CypressPilotPage() {
     </div>
   );
 }
+
