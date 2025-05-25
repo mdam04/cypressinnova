@@ -18,6 +18,10 @@ const nextConfig: NextConfig = {
       },
     ],
   },
+  experimental: {
+    clientRouterFilter: false,
+    clientRouterFilterRedirects: false
+  }
 };
 
 export default nextConfig;
