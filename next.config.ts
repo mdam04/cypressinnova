@@ -20,7 +20,8 @@ const nextConfig: NextConfig = {
   },
   experimental: {
     clientRouterFilter: false,
-    clientRouterFilterRedirects: false
+    clientRouterFilterRedirects: false,
+    serverActions: true
   }
 };
 
