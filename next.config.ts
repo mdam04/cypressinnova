@@ -21,7 +21,10 @@ const nextConfig: NextConfig = {
   experimental: {
     clientRouterFilter: false,
     clientRouterFilterRedirects: false,
-    serverActions: true
+    serverActions: true,
+    serverActionsBodySizeLimit: '2mb',
+    serverComponentsExternalPackages: [],
+    useSearchParamsInServerComponent: true
   }
 };
 
